@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.3.1";
+const APP_VERSION = "1.4.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -419,13 +419,7 @@ function hydrateImages(){
 }
 document.addEventListener("error", ev => {
   const t = ev.target;
-  if(t && t.classList && t.classList.contains("st-logo")){
-    const sym = t.dataset.sym, next = +t.dataset.idx + 1;
-    if(navigator.onLine === false){ t.remove(); return; }
-    if(next < LOGO_SRC.length){ t.dataset.idx = next; t.src = LOGO_SRC[next](sym); }
-    else { setLogoState(sym, "none"); t.remove(); }
-    return;
-  }
+  if(t && t.classList && t.classList.contains("st-logo")){ t.remove(); return; }
   if(t && t.tagName === "IMG" && t.dataset && t.dataset.path && !t.dataset.retried && navigator.onLine){
     t.dataset.retried = "1"; S.urls.delete(t.dataset.path); t.removeAttribute("src"); hydrateImages();
   }
@@ -658,36 +652,99 @@ const num = v => typeof v === "number" && isFinite(v);
 const codeOf = sym => String(sym || "").replace(/\.(KS|KQ)$/, "");
 const exchLabel = s => s.market === "KR" ? (/\.KQ$/.test(s.symbol) ? "코스닥" : "코스피") : "미국";
 const parseNum = v => { const n = parseFloat(String(v ?? "").replace(/[,\s원$₩주]/g, "")); return isFinite(n) ? n : null; };
-// company logos: Financial Modeling Prep first, Parqet as backup, initial letter if neither has one
-const LOGO_SRC = [
-  sym => `https://financialmodelingprep.com/image-stock/${encodeURIComponent(sym)}.png`,
-  sym => `https://assets.parqet.com/logos/symbol/${encodeURIComponent(sym)}?format=png`
-];
-const logoState = (() => { try{ return JSON.parse(localStorage.getItem("sansiya-logos") || "{}"); }catch(e){ return {}; } })();
-let logoSaveT = 0;
-function setLogoState(sym, v){
-  logoState[sym] = v; clearTimeout(logoSaveT);
-  logoSaveT = setTimeout(() => { try{ localStorage.setItem("sansiya-logos", JSON.stringify(logoState)); }catch(e){} }, 500);
+// company logos, trimmed to their content so the mark fills the circle.
+// Financial Modeling Prep logos are analysed on a canvas (background, coloured symbol vs. wordmark);
+// Parqet is a plain fallback; otherwise the initial letter stays.
+const LOGO_V = 1;
+const FMP_LOGO = sym => `https://financialmodelingprep.com/image-stock/${encodeURIComponent(sym)}.png`;
+const PARQET_LOGO = sym => `https://assets.parqet.com/logos/symbol/${encodeURIComponent(sym)}?format=png`;
+let LOGOS = {};   // sym -> { u, bg } | { raw:url } | "none"
+const logosReady = KV.get("logos-v" + LOGO_V).then(v => { if(v && typeof v === "object") LOGOS = v; }).catch(() => {});
+const logoQueue = []; let logoBusy = false, logoSaveT = 0;
+const isTicker = sym => /^[A-Za-z0-9.\-]{1,15}$/.test(sym);
+try{ localStorage.removeItem("sansiya-logos"); }catch(e){}
+function logoImg(sym){
+  const L = LOGOS[sym];
+  if(L && L.u) return `<img class="st-logo fit ok" src="${L.u}" alt="">`;
+  if(L && L.raw) return `<img class="st-logo raw" src="${esc(L.raw)}" alt="" referrerpolicy="no-referrer">`;
+  return "";
 }
 function avaHtml(s, size){
   let h = 0; for(const ch of String(s.symbol || s.name || "?")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   const c = PAL[h % PAL.length];
   const ch0 = (String(s.name || s.symbol || "?").match(/[가-힣A-Za-z0-9]/) || ["?"])[0].toUpperCase();
-  const sym = String(s.symbol || "");
-  const st = logoState[sym];
-  const idx = typeof st === "number" ? st : 0;
-  const img = /^[A-Za-z0-9.\-]{1,15}$/.test(sym) && st !== "none" && idx < LOGO_SRC.length
-    ? `<img class="st-logo${typeof st === "number" ? " ok" : ""}" src="${esc(LOGO_SRC[idx](sym))}" data-sym="${esc(sym)}" data-idx="${idx}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : "";
-  return `<span class="st-ava${size ? " " + size : ""}" style="--ava:${c}" aria-hidden="true"><span class="st-ini">${esc(ch0)}</span>${img}</span>`;
+  const sym = String(s.symbol || ""), tick = isTicker(sym);
+  if(tick && LOGOS[sym] === undefined) queueLogo(sym);
+  return `<span class="st-ava${size ? " " + size : ""}" style="--ava:${c}" data-logo="${esc(sym)}" aria-hidden="true"><span class="st-ini">${esc(ch0)}</span>${tick ? logoImg(sym) : ""}</span>`;
 }
-// logo loaded -> show it; failed -> try the next source, then fall back to the initial letter
-document.addEventListener("load", ev => {
-  const t = ev.target;
-  if(t && t.classList && t.classList.contains("st-logo")){
-    if(t.naturalWidth < 8){ t.dispatchEvent(new Event("error")); return; }
-    t.classList.add("ok"); const sym = t.dataset.sym; if(logoState[sym] !== +t.dataset.idx) setLogoState(sym, +t.dataset.idx);
+function queueLogo(sym){ if(!logoQueue.includes(sym)) logoQueue.push(sym); if(!logoBusy) runLogoQueue(); }
+async function runLogoQueue(){
+  logoBusy = true;
+  await logosReady;
+  while(logoQueue.length){
+    const sym = logoQueue.shift();
+    if(LOGOS[sym] !== undefined){ paintLogo(sym); continue; }
+    if(navigator.onLine === false){ logoQueue.length = 0; break; }
+    let res = null;
+    try{ res = await fitLogo(FMP_LOGO(sym)); }catch(e){ res = null; }
+    if(!res) res = (await probeRaw(PARQET_LOGO(sym))) ? { raw:PARQET_LOGO(sym) } : "none";
+    LOGOS[sym] = res; paintLogo(sym);
+    clearTimeout(logoSaveT); logoSaveT = setTimeout(() => KV.set("logos-v" + LOGO_V, LOGOS), 400);
   }
-}, true);
+  logoBusy = false;
+}
+function probeRaw(url){
+  return new Promise(r => { const im = new Image(); const t = setTimeout(() => r(false), 8000);
+    im.referrerPolicy = "no-referrer"; im.onload = () => { clearTimeout(t); r(im.naturalWidth >= 8); }; im.onerror = () => { clearTimeout(t); r(false); }; im.src = url; });
+}
+function paintLogo(sym){
+  const sel = `.st-ava[data-logo="${window.CSS && CSS.escape ? CSS.escape(sym) : sym}"]`;
+  document.querySelectorAll(sel).forEach(el => { el.querySelectorAll(".st-logo").forEach(i => i.remove()); el.insertAdjacentHTML("beforeend", logoImg(sym)); });
+}
+async function fitLogo(url){
+  const r = await fetch(url, { mode:"cors", cache:"force-cache" });
+  if(!r.ok) return null;
+  const blob = await r.blob();
+  if(!/^image\//.test(blob.type) || blob.size < 100) return null;
+  const bmp = await createImageBitmap(blob);
+  const w = bmp.width, h = bmp.height; if(w < 8 || h < 8) return null;
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  const g = cv.getContext("2d", { willReadFrequently:true }); g.drawImage(bmp, 0, 0);
+  const d = g.getImageData(0, 0, w, h).data;
+  const px = (x, y) => { const i = (y * w + x) * 4; return [d[i], d[i + 1], d[i + 2], d[i + 3]]; };
+  const corners = [px(0, 0), px(w - 1, 0), px(0, h - 1), px(w - 1, h - 1)];
+  let bg = null; // null = transparent background
+  if(corners.every(c => c[3] > 200)){
+    const avg = [0, 1, 2].map(k => Math.round(corners.reduce((a, c) => a + c[k], 0) / 4));
+    if(corners.every(c => Math.abs(c[0] - avg[0]) + Math.abs(c[1] - avg[1]) + Math.abs(c[2] - avg[2]) < 40)) bg = avg;
+  }
+  const A = { x0:w, y0:h, x1:-1, y1:-1, n:0 }, C = { x0:w, y0:h, x1:-1, y1:-1, n:0 };
+  const add = (B, x, y) => { if(x < B.x0) B.x0 = x; if(y < B.y0) B.y0 = y; if(x > B.x1) B.x1 = x; if(y > B.y1) B.y1 = y; B.n++; };
+  for(let y = 0; y < h; y++) for(let x = 0; x < w; x++){
+    const i = (y * w + x) * 4, rr = d[i], gg = d[i + 1], bb = d[i + 2], a = d[i + 3];
+    if(a < 40 || (bg && Math.abs(rr - bg[0]) + Math.abs(gg - bg[1]) + Math.abs(bb - bg[2]) < 60)) continue;
+    add(A, x, y);
+    if(Math.max(rr, gg, bb) - Math.min(rr, gg, bb) > 70) add(C, x, y);
+  }
+  if(A.n < 20) return null;
+  let box = A;
+  // coloured symbol next to a grey/black wordmark: keep only the symbol
+  const area = B => (B.x1 - B.x0 + 1) * (B.y1 - B.y0 + 1);
+  if(C.n > 30 && C.n / A.n >= 0.25 && C.n / A.n < 0.85 && area(C) / area(A) < 0.6) box = C;
+  const bw = box.x1 - box.x0 + 1, bh = box.y1 - box.y0 + 1;
+  const fullBleed = !bg && box.x0 <= 2 && box.y0 <= 2 && box.x1 >= w - 3 && box.y1 >= h - 3;
+  const side = Math.max(bw, bh) * (fullBleed ? 1 : 1.32);
+  const N = 128, out = document.createElement("canvas"); out.width = out.height = N;
+  const o = out.getContext("2d");
+  const bgCss = bg ? `rgb(${bg[0]},${bg[1]},${bg[2]})` : "#ffffff";
+  o.fillStyle = bgCss; o.fillRect(0, 0, N, N);
+  o.imageSmoothingQuality = "high";
+  const k = N / side, cx = box.x0 + bw / 2, cy = box.y0 + bh / 2;
+  o.drawImage(cv, 0, 0, w, h, N / 2 - cx * k, N / 2 - cy * k, w * k, h * k);
+  return { u:out.toDataURL("image/png"), bg:bgCss };
+}
+// raw (fallback) logos: show once loaded, drop on error so the initial letter shows
+document.addEventListener("load", ev => { const t = ev.target; if(t && t.classList && t.classList.contains("st-logo")) t.classList.add("ok"); }, true);
 function fmtMoney(v, cur, sign){
   if(!num(v)) return "-";
   const sg = sign && v > 0 ? "+" : (v < 0 ? "-" : "");
@@ -711,6 +768,8 @@ function fmtAgo(t){
   return s < 60 ? "방금" : s < 3600 ? `${Math.floor(s / 60)}분 전` : fmtTime(t);
 }
 const fxRate = () => S.fx && num(S.fx.usdkrw) ? S.fx.usdkrw : null;
+// "457,034원" for a dollar amount (empty for won amounts or when the rate is unknown)
+const wonOf = (v, cur, sign) => cur === "USD" && num(v) && fxRate() ? fmtMoney(v * fxRate(), "KRW", sign) : "";
 const toKRW = (v, cur) => !num(v) ? null : cur !== "USD" ? v : (fxRate() ? v * fxRate() : null);
 const quoteOf = s => S.quotes[s.symbol] || null;
 const divKRW = d => num(d.krw) ? d.krw : toKRW(d.amount, d.currency);
@@ -791,11 +850,12 @@ function holdRowHtml(s, p){
   let right;
   if(S.holdShow === "price"){
     const q = p.q;
-    right = `<b>${q ? fmtMoney(q.price, s.currency) : "-"}</b><small class="${tone(q && q.changePct)}">${q ? fmtPct(q.changePct, 1) : "시세 없음"}</small>`;
+    right = `<b>${q ? fmtMoney(q.price, s.currency) : "-"}</b><small>${q && wonOf(q.price, s.currency) ? `<span class="st-won">${wonOf(q.price, s.currency)}</span> ` : ""}<span class="${tone(q && q.changePct)}">${q ? fmtPct(q.changePct, 1) : "시세 없음"}</span></small>`;
   }else{
     const val = krwOk ? my(p.valueKRW, "KRW") : my(p.value != null ? p.value : p.cost, s.currency);
     const pl = p.pl == null ? "시세 없음" : `${krwOk ? my(p.plKRW, "KRW", true) : my(p.pl, s.currency, true)} (${fmtPct(p.plPct, 1)})`;
-    right = `<b>${val}</b><small class="${tone(p.pl)}">${pl}</small>`;
+    const usd = s.currency === "USD" && krwOk ? `<small class="st-won">${my(p.value != null ? p.value : p.cost, "USD")}</small>` : "";
+    right = `<b>${val}</b>${usd}<small class="${tone(p.pl)}">${pl}</small>`;
   }
   return `<button type="button" class="st-row" data-stock="${esc(s.id)}">${avaHtml(s)}
     <span class="st-main"><b>${esc(s.name)}</b><small>${S.hideAmt ? "" : fmtQty(p.qty) + "주 · "}평균 ${fmtMoney(p.avg, s.currency)}</small></span>
@@ -848,7 +908,7 @@ function targetInfo(s){
   if(!num(s.target)) return "";
   if(!q || !num(q.price)) return `목표가 ${fmtMoney(s.target, s.currency)}`;
   const gap = (s.target - q.price) / q.price * 100;
-  return gap <= 0 ? `목표가 ${fmtMoney(s.target, s.currency)} 도달` : `목표가 ${fmtMoney(s.target, s.currency)} · ${gap.toFixed(1)}% 남음`;
+  return gap <= 0 ? `목표가 ${fmtMoney(s.target, s.currency)} 도달` : `목표가 ${fmtMoney(s.target, s.currency)}${wonOf(s.target, s.currency) ? ` (${wonOf(s.target, s.currency)})` : ""} · ${gap.toFixed(1)}% 남음`;
 }
 function watchHtml(){
   const list = S.stocks.filter(s => s.watch).sort((a, b) => (a.sort - b.sort) || (a.createdAt - b.createdAt));
@@ -863,7 +923,7 @@ function watchHtml(){
       const sub = targetInfo(s) || (s.memo ? s.memo.split("\n")[0] : `${codeOf(s.symbol)} · ${exchLabel(s)}`);
       return `<button type="button" class="st-row" data-stock="${esc(s.id)}">${avaHtml(s)}
         <span class="st-main"><b>${esc(s.name)}</b><small>${esc(sub)}</small></span>
-        <span class="st-right"><b>${q ? fmtMoney(q.price, s.currency) : "-"}</b><small class="${tone(q && q.changePct)}">${q ? fmtPct(q.changePct, 1) : "시세 없음"}</small></span></button>`;
+        <span class="st-right"><b>${q ? fmtMoney(q.price, s.currency) : "-"}</b><small>${q && wonOf(q.price, s.currency) ? `<span class="st-won">${wonOf(q.price, s.currency)}</span> ` : ""}<span class="${tone(q && q.changePct)}">${q ? fmtPct(q.changePct, 1) : "시세 없음"}</span></small></span></button>`;
     }).join("")}</div></section>`;
 }
 function divHtml(){
@@ -957,18 +1017,19 @@ function openStock(id){
 function stockParts(s){
   const p = position(s), q = p.q, cur = s.currency;
   const price = `<div class="st-big">${q ? fmtMoney(q.price, cur) : "-"}</div>
-    <div class="st-chg ${tone(q && q.change)}"><span class="st-muted0">어제보다</span> ${q && num(q.change) ? `${fmtMoney(q.change, cur, true)} (${fmtPct(q.changePct)})` : "시세 없음"}</div>
-    <p class="st-note">${quoteLine(q, s)}${cur === "USD" && q && fxRate() ? ` · 원화 약 ${fmtMoney(q.price * fxRate(), "KRW")}` : ""}</p>`;
-  const krw = v => cur === "USD" && num(toKRW(v, cur)) ? `<small>${my(toKRW(v, cur), "KRW", false)}</small>` : "";
+    ${q && wonOf(q.price, cur) ? `<div class="st-big2">${wonOf(q.price, cur)}</div>` : ""}
+    <div class="st-chg ${tone(q && q.change)}"><span class="st-muted0">어제보다</span> ${q && num(q.change) ? `${fmtMoney(q.change, cur, true)}${wonOf(q.change, cur) ? ` · ${wonOf(q.change, cur, true)}` : ""} (${fmtPct(q.changePct)})` : "시세 없음"}</div>
+    <p class="st-note">${quoteLine(q, s)}${cur === "USD" && fxRate() ? ` · 원화는 지금 환율 ${fxRate().toLocaleString("ko-KR", { maximumFractionDigits:2 })}원으로 계산해요.` : ""}</p>`;
+  const krw = (v, sign) => cur === "USD" && num(toKRW(v, cur)) ? `<small>${my(toKRW(v, cur), "KRW", sign)}</small>` : "";
   const pos = p.qty > 0 ? `<h4 class="st-h4">내 주식</h4><dl class="st-grid">
       <div><dt>보유 수량</dt><dd>${S.hideAmt ? "••" : fmtQty(p.qty)}주</dd></div>
-      <div><dt>1주 평균금액</dt><dd>${fmtMoney(p.avg, cur)}</dd></div>
+      <div><dt>1주 평균금액</dt><dd>${fmtMoney(p.avg, cur)}${cur === "USD" && wonOf(p.avg, cur) ? `<small>${wonOf(p.avg, cur)}</small>` : ""}</dd></div>
       <div><dt>총 금액</dt><dd>${my(p.value != null ? p.value : p.cost, cur)}${krw(p.value != null ? p.value : p.cost)}</dd></div>
       <div><dt>투자 원금</dt><dd>${my(p.cost, cur)}${krw(p.cost)}</dd></div>
-      <div><dt>총 수익</dt><dd class="${tone(p.pl)}">${p.pl != null ? my(p.pl, cur, true) : "-"}<small class="${tone(p.pl)}">${fmtPct(p.plPct)}</small></dd></div>
-      <div><dt>어제보다</dt><dd class="${tone(p.day)}">${p.day != null ? my(p.day, cur, true) : "-"}<small class="${tone(p.day)}">${p.q && num(p.q.changePct) ? fmtPct(p.q.changePct) : ""}</small></dd></div>
+      <div><dt>총 수익</dt><dd class="${tone(p.pl)}">${p.pl != null ? my(p.pl, cur, true) : "-"}${p.pl != null ? krw(p.pl, true) : ""}<small class="${tone(p.pl)}">${fmtPct(p.plPct)}</small></dd></div>
+      <div><dt>어제보다</dt><dd class="${tone(p.day)}">${p.day != null ? my(p.day, cur, true) : "-"}${p.day != null ? krw(p.day, true) : ""}<small class="${tone(p.day)}">${p.q && num(p.q.changePct) ? fmtPct(p.q.changePct) : ""}</small></dd></div>
     </dl>` : "";
-  const target = num(s.target) ? `<div class="st-target"><span>목표가</span><b>${fmtMoney(s.target, cur)}</b>${q && num(q.price) ? `<small>${s.target > q.price ? `지금보다 ${fmtPct((s.target - q.price) / q.price * 100, 1)}` : "도달했어요"}</small>` : ""}</div>` : "";
+  const target = num(s.target) ? `<div class="st-target"><span>목표가</span><b>${fmtMoney(s.target, cur)}</b>${wonOf(s.target, cur) ? `<span>${wonOf(s.target, cur)}</span>` : ""}${q && num(q.price) ? `<small>${s.target > q.price ? `지금보다 ${fmtPct((s.target - q.price) / q.price * 100, 1)}` : "도달했어요"}</small>` : ""}</div>` : "";
   const notes = `<h4 class="st-h4">노트<span class="st-muted">${(s.notes || []).length || ""}</span></h4>
     ${(s.notes || []).length ? `<ul class="st-notes">${s.notes.map(n => `<li><time>${esc(String(n.date || "").replace(/-/g, "."))}</time><p>${linkify(n.text || "")}</p><button type="button" data-rmnote="${esc(n.id)}" aria-label="노트 지우기">×</button></li>`).join("")}</ul>` : `<p class="st-warn" style="margin:0">뉴스, 실적, 사고판 이유처럼 이 종목에 대한 생각을 날짜별로 남겨 보세요.</p>`}
     <div class="st-addnote"><textarea id="st-note" rows="2" placeholder="새 노트"></textarea><button type="button" class="btn" data-act="stNoteAdd">추가</button></div>`;
@@ -1110,7 +1171,7 @@ function bindChart(){
     g.setAttribute("visibility", "visible");
     const ln = g.querySelector("line"); ln.setAttribute("x1", px); ln.setAttribute("x2", px);
     const c = g.querySelector("circle"); c.setAttribute("cx", px); c.setAttribute("cy", py);
-    tip.textContent = `${geo.fd(geo.pts[i][0])} · ${fmtMoney(geo.pts[i][1], geo.cur)}`; tip.hidden = false;
+    tip.textContent = `${geo.fd(geo.pts[i][0])} · ${fmtMoney(geo.pts[i][1], geo.cur)}${wonOf(geo.pts[i][1], geo.cur) ? ` (${wonOf(geo.pts[i][1], geo.cur)})` : ""}`; tip.hidden = false;
     const br = box.getBoundingClientRect(), half = tip.offsetWidth / 2;
     const left = r.left - br.left + px / geo.W * r.width;
     tip.style.left = Math.max(half, Math.min(br.width - half, left)) + "px";
@@ -1211,7 +1272,7 @@ function openStockForm(base, id){
 function stfPriceHtml(){
   const d = OV && OV.d; if(!d) return "";
   const q = S.quotes[d.symbol];
-  return q ? `현재가 <b>${fmtMoney(q.price, d.currency)}</b> <span class="${tone(q.changePct)}">${fmtPct(q.changePct)}</span>` : (navigator.onLine ? "현재가 불러오는 중…" : "오프라인이라 현재가를 못 불러왔어요.");
+  return q ? `현재가 <b>${fmtMoney(q.price, d.currency)}</b>${wonOf(q.price, d.currency) ? ` (${wonOf(q.price, d.currency)})` : ""} <span class="${tone(q.changePct)}">${fmtPct(q.changePct)}</span>` : (navigator.onLine ? "현재가 불러오는 중…" : "오프라인이라 현재가를 못 불러왔어요.");
 }
 function syncStForm(){
   if(!OV || OV.kind !== "stform" || !$("#stf-name")) return;

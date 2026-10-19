@@ -454,5 +454,11 @@ body:has(.st-actions) .toast{bottom:calc(92px + env(safe-area-inset-bottom,0px))
 .st-ini{position:relative;z-index:0}
 .st-logo{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;padding:14%;box-sizing:border-box;background:#fff;border-radius:50%;opacity:0;transition:opacity .15s;z-index:1}
 .st-logo.ok{opacity:1}
+.st-logo.fit{padding:0;object-fit:cover;background:transparent}
 .st-ava:has(.st-logo.ok){box-shadow:inset 0 0 0 1px var(--line-2)}
 .st-ava:has(.st-logo.ok)::after{content:"";position:absolute;inset:0;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(0,0,0,.06);z-index:2;pointer-events:none}
+
+.st-won{color:var(--ink-3);font-weight:500}
+.st-right small.st-won{font-size:12.5px}
+.st-big2{font-size:17px;font-weight:500;color:var(--ink-2);font-variant-numeric:tabular-nums;margin-top:-2px}
+.st-target span + span{font-size:13px;opacity:.8}
