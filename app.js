@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.4.1";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -655,7 +655,7 @@ const parseNum = v => { const n = parseFloat(String(v ?? "").replace(/[,\sì›$â‚
 // company logos, trimmed to their content so the mark fills the circle.
 // Financial Modeling Prep logos are analysed on a canvas (background, coloured symbol vs. wordmark);
 // Parqet is a plain fallback; otherwise the initial letter stays.
-const LOGO_V = 1;
+const LOGO_V = 2;
 const FMP_LOGO = sym => `https://financialmodelingprep.com/image-stock/${encodeURIComponent(sym)}.png`;
 const PARQET_LOGO = sym => `https://assets.parqet.com/logos/symbol/${encodeURIComponent(sym)}?format=png`;
 let LOGOS = {};   // sym -> { u, bg } | { raw:url } | "none"
@@ -663,6 +663,7 @@ const logosReady = KV.get("logos-v" + LOGO_V).then(v => { if(v && typeof v === "
 const logoQueue = []; let logoBusy = false, logoSaveT = 0;
 const isTicker = sym => /^[A-Za-z0-9.\-]{1,15}$/.test(sym);
 try{ localStorage.removeItem("sansiya-logos"); }catch(e){}
+for(let v = 1; v < LOGO_V; v++) KV.del("logos-v" + v).catch(() => {});
 function logoImg(sym){
   const L = LOGOS[sym];
   if(L && L.u) return `<img class="st-logo fit ok" src="${L.u}" alt="">`;
@@ -739,8 +740,11 @@ async function fitLogo(url){
   const bgCss = bg ? `rgb(${bg[0]},${bg[1]},${bg[2]})` : "#ffffff";
   o.fillStyle = bgCss; o.fillRect(0, 0, N, N);
   o.imageSmoothingQuality = "high";
+  // copy only the chosen box (+1px for anti-aliasing) so a wordmark beside or under the symbol never shows
+  const sx = Math.max(0, box.x0 - 1), sy = Math.max(0, box.y0 - 1);
+  const sw = Math.min(w, box.x1 + 2) - sx, sh = Math.min(h, box.y1 + 2) - sy;
   const k = N / side, cx = box.x0 + bw / 2, cy = box.y0 + bh / 2;
-  o.drawImage(cv, 0, 0, w, h, N / 2 - cx * k, N / 2 - cy * k, w * k, h * k);
+  o.drawImage(cv, sx, sy, sw, sh, N / 2 - (cx - sx) * k, N / 2 - (cy - sy) * k, sw * k, sh * k);
   return { u:out.toDataURL("image/png"), bg:bgCss };
 }
 // raw (fallback) logos: show once loaded, drop on error so the initial letter shows
