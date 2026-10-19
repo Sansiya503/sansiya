@@ -191,6 +191,16 @@ async function history(symbol: string, range: string) {
   return data;
 }
 
+// market strip: index / FX quote plus a small intraday line (about 48 points) for the card
+async function marketRow(symbol: string) {
+  const [q, h] = await Promise.all([quoteOne(symbol), history(symbol, "1d").catch(() => null)]);
+  if (!q) return null;
+  const pts = ((h as { points?: [number, number][] } | null)?.points) || [];
+  const step = Math.max(1, Math.ceil(pts.length / 48));
+  const spark = pts.filter((_, i) => i % step === 0 || i === pts.length - 1).map((p) => p[1]);
+  return { symbol, price: q.price, prevClose: q.prevClose, change: q.change, changePct: q.changePct, time: q.time, spark };
+}
+
 async function requireUser(req: Request) {
   const auth = req.headers.get("authorization") || "";
   const apikey = req.headers.get("apikey") || "";
@@ -217,7 +227,14 @@ Deno.serve(async (req) => {
         const f = await quoteOne("KRW=X");
         if (f) fx = { usdkrw: f.price, time: f.time };
       }
-      return json({ quotes, fx, at: Date.now() });
+      let market: Record<string, unknown> | undefined;
+      if (Array.isArray(body.market)) {
+        const ms: string[] = [...new Set((body.market as string[]).filter((s) => typeof s === "string" && /^[A-Za-z0-9.\-^=]{1,20}$/.test(s)))].slice(0, 8);
+        const rows = await mapLimit(ms, 4, (s) => marketRow(s).catch(() => null));
+        market = {};
+        rows.forEach((r, i) => { if (r) market![ms[i]] = r; });
+      }
+      return json({ quotes, fx, market, at: Date.now() });
     }
     if (action === "search") return json({ results: await search(String(body.q || "").slice(0, 40)) });
     if (action === "history") {

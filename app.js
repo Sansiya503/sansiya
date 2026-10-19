@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.4.1";
+const APP_VERSION = "1.5.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -285,7 +285,7 @@ const S = {
   outbox:[], lastSync:0, lastPull:0, sync:"idle", syncErr:"",
   urls:new Map(), installEvt:null,
   stocks:[], divs:[], quotes:{}, fx:null, quotesAt:0, qLoading:false, qErr:"",
-  stockTab:"hold", divYear:new Date().getFullYear(), hist:{},
+  stockTab:"hold", divYear:new Date().getFullYear(), hist:{}, market:{},
   holdSort:"value", holdShow:"value", hideAmt:false
 };
 try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; }catch(e){}
@@ -753,6 +753,7 @@ function fmtMoney(v, cur, sign){
   if(!num(v)) return "-";
   const sg = sign && v > 0 ? "+" : (v < 0 ? "-" : "");
   const a = Math.abs(v);
+  if(cur === "PT" || cur === "FX") return `${sg}${a.toLocaleString("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 })}${cur === "FX" ? "원" : ""}`;
   return cur === "USD" ? `${sg}$${a.toLocaleString("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 })}` : `${sg}${Math.round(a).toLocaleString("ko-KR")}원`;
 }
 // my own amounts (valuation, profit, principal, dividends) can be hidden; prices and % stay visible
@@ -810,11 +811,12 @@ async function refreshQuotes(force, only){
   const symbols = only || [...new Set(S.stocks.map(s => s.symbol))];
   if(!only){ S.qLoading = true; paintQuotes(true); }
   try{
-    const d = await S.B.invoke({ action:"quotes", symbols });
+    const d = await S.B.invoke(only ? { action:"quotes", symbols } : { action:"quotes", symbols, market:MARKET.map(m => m[0]) });
     Object.assign(S.quotes, d.quotes || {});
     if(d.fx) S.fx = d.fx;
+    if(d.market) Object.assign(S.market, d.market);
     if(!only){ S.quotesAt = d.at || Date.now(); S.qErr = ""; }
-    KV.set(k("quotes"), { quotes:S.quotes, fx:S.fx, at:S.quotesAt });
+    KV.set(k("quotes"), { quotes:S.quotes, fx:S.fx, at:S.quotesAt, market:S.market });
   }catch(e){
     if(!only) S.qErr = isNetErr(e) ? "offline" : errMsg(e);
   }finally{
@@ -826,6 +828,7 @@ function paintQuotes(onlyButton){
   if(onlyButton){ const b = $("#stRefresh"); if(b) b.textContent = "불러오는 중…"; return; }
   if(S.view === "stocks") render();
   if(OV && OV.kind === "stock") updateStockDetail();
+  if(OV && OV.kind === "index"){ const el = $("#stp-price"), s = ovSubject(); if(el && s) el.innerHTML = indexPriceHtml(s); }
   if(OV && OV.kind === "stform"){ const el = $("#stfPrice"); if(el) el.innerHTML = stfPriceHtml(); }
   if(OV && OV.kind === "divform"){ const el = $("#dvKrwHint"); if(el) el.textContent = dvKrwHint(); }
 }
@@ -839,11 +842,79 @@ function quoteLine(q, s){
   return `${t ? t + " 기준 · " : ""}${s.market === "KR" ? "한국 시세는 약 20분 늦을 수 있어요." : "시세는 조금 늦을 수 있어요."}`;
 }
 
+/* ---------- stocks: market strip (US indices + dollar rate) ---------- */
+const MARKET = [
+  ["^IXIC", "나스닥", "NASDAQ Composite", "나스닥 거래소에 상장된 3,000여 종목으로 만든 지수예요. 기술주 비중이 높아요."],
+  ["^GSPC", "S&P 500", "S&P 500 Index", "미국 대형주 500개로 만든 미국 시장의 대표 지수예요."],
+  ["^DJI", "다우존스", "Dow Jones Industrial Average", "미국 대표 우량주 30개로 만든 가장 오래된 지수예요."],
+  ["^SOX", "필라델피아 반도체", "PHLX Semiconductor Index", "엔비디아·브로드컴 같은 미국 반도체 기업 30개로 만든 지수예요."],
+  ["KRW=X", "달러 환율", "USD/KRW", "1달러를 사는 데 드는 원화예요. 환율이 오르면 미국 주식의 원화 평가금도 커져요."]
+];
+const mkCur = sym => sym === "KRW=X" ? "FX" : "PT";
+function sparkSvg(vals, base, tn){
+  if(!vals || vals.length < 2) return `<svg class="mk-sp" viewBox="0 0 100 26" aria-hidden="true"></svg>`;
+  const all = num(base) ? vals.concat(base) : vals;
+  let mn = Math.min(...all), mx = Math.max(...all); if(mn === mx){ mn -= 1; mx += 1; }
+  const X = i => (i / (vals.length - 1) * 100).toFixed(2), Y = v => (2 + (mx - v) / (mx - mn) * 22).toFixed(2);
+  const col = tn === "up" ? "var(--up)" : tn === "down" ? "var(--down)" : "var(--ink-3)";
+  return `<svg class="mk-sp" viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true">
+    ${num(base) ? `<line x1="0" x2="100" y1="${Y(base)}" y2="${Y(base)}" stroke="var(--line-2)" stroke-dasharray="2 3" vector-effect="non-scaling-stroke"/>` : ""}
+    <polyline points="${vals.map((v, i) => X(i) + "," + Y(v)).join(" ")}" fill="none" stroke="${col}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>`;
+}
+function marketHtml(){
+  return `<div class="mk-row" role="list" aria-label="미국 지수와 달러 환율">${MARKET.map(([sym, name]) => {
+    const m = S.market[sym], cur = mkCur(sym), tn = tone(m && m.change);
+    return `<button type="button" class="mk" role="listitem" data-index="${esc(sym)}">
+      <span class="mk-n">${esc(name)}</span>
+      <b class="mk-v">${m ? fmtMoney(m.price, cur) : "-"}</b>
+      <span class="mk-c ${tn}">${m && num(m.changePct) ? `${fmtMoney(m.change, cur === "FX" ? "PT" : cur, true)} (${fmtPct(m.changePct)})` : "&nbsp;"}</span>
+      ${sparkSvg(m && m.spark, m && m.prevClose, tn)}</button>`;
+  }).join("")}</div>`;
+}
+function ovSubject(){
+  if(!OV) return null;
+  if(OV.kind === "stock") return S.stocks.find(x => x.id === OV.id) || null;
+  if(OV.kind === "index"){ const m = MARKET.find(x => x[0] === OV.sym); return m ? { id:m[0], symbol:m[0], name:m[1], currency:mkCur(m[0]) } : null; }
+  return null;
+}
+function openIndex(sym){
+  if(!MARKET.some(m => m[0] === sym)) return;
+  if(OV) endOvKeepHistory();
+  OV = { kind:"index", sym, range:"1d" };
+  renderIndexDetail(); loadHistory();
+}
+function indexPriceHtml(s){
+  const m = S.market[s.symbol], cur = s.currency;
+  const t = m && m.time ? fmtTime(m.time * 1000) : "";
+  return `<div class="st-big">${m ? fmtMoney(m.price, cur) : "-"}</div>
+    <div class="st-chg ${tone(m && m.change)}"><span class="st-muted0">어제보다</span> ${m && num(m.change) ? `${fmtMoney(m.change, cur, true)} (${fmtPct(m.changePct)})` : "시세 없음"}</div>
+    <p class="st-note">${t ? t + " 기준 · " : ""}시세는 조금 늦을 수 있어요.</p>`;
+}
+function renderIndexDetail(){
+  const s = ovSubject(); if(!s){ closeOv(); return; }
+  const info = MARKET.find(x => x[0] === s.symbol);
+  showOv(`<div class="sheetbox st-sheet" role="dialog" aria-modal="true" aria-label="${esc(s.name)}">
+    <div class="sb-head"><span class="ttl">${s.currency === "FX" ? "환율" : "미국 지수"}</span>
+      <div class="sp"><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
+    <div class="sb-body">
+      <div class="st-dhead"><div style="min-width:0"><h2 class="st-dname">${esc(s.name)}</h2><div class="st-dsym">${esc(info[2])}</div></div></div>
+      <div id="stp-price">${indexPriceHtml(s)}</div>
+      <div class="st-chartbox">
+        <div class="st-chart" id="stChart">${chartHtml(S.hist[s.symbol + "|" + OV.range], s)}</div>
+        <div class="seg st-ranges" role="group" aria-label="기간">${RANGES.map(([r, l]) => `<button type="button" data-strange="${r}" aria-pressed="${OV.range === r}">${l}</button>`).join("")}</div>
+      </div>
+      <p class="mk-about">${esc(info[3])}</p>
+    </div>
+  </div>`);
+  bindChart();
+}
+
 /* ---------- stocks: main view ---------- */
 function stocksHtml(){
   const tabs = [["hold","내 주식"],["watch","관심"],["div","배당"]];
   const body = S.stockTab === "watch" ? watchHtml() : S.stockTab === "div" ? divHtml() : holdHtml();
   return `<div class="st-wrap">
+    ${marketHtml()}
     <div class="st-tabs" role="tablist">${tabs.map(([key, l]) => `<button type="button" role="tab" data-sttab="${key}" aria-selected="${S.stockTab === key}">${l}</button>`).join("")}</div>
     ${body}
     <p class="st-source">시세·차트: Yahoo Finance (지연될 수 있어요) · 한국 종목 정보: aikstockdata.com (금융위원회 공공데이터). 투자 판단의 근거가 아니라 기록용이에요.</p>
@@ -1089,7 +1160,7 @@ function setStockConfirm(v){
 }
 function setRange(r){
   OV.range = r;
-  const s = S.stocks.find(x => x.id === OV.id); if(!s) return;
+  const s = ovSubject(); if(!s) return;
   document.querySelectorAll("[data-strange]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.strange === r)));
   const el = $("#stChart"); if(el){ el.innerHTML = chartHtml(S.hist[s.symbol + "|" + r], s); bindChart(); }
   loadHistory();
@@ -1103,8 +1174,7 @@ function updateStockDetail(){
   const ta = $("#st-note"); if(ta && draft) ta.value = draft;
 }
 async function loadHistory(){
-  if(!OV || OV.kind !== "stock") return;
-  const s = S.stocks.find(x => x.id === OV.id); if(!s) return;
+  const s = ovSubject(); if(!s) return;
   const key = s.symbol + "|" + OV.range, h = S.hist[key];
   if(h && !h.err && Date.now() - h.at < (OV.range === "1d" || OV.range === "5d" ? 60e3 : 10 * 60e3)) return;
   try{
@@ -1114,7 +1184,8 @@ async function loadHistory(){
   }catch(e){
     S.hist[key] = { at:Date.now(), err: isNetErr(e) ? "인터넷에 연결되면 차트를 볼 수 있어요." : "차트를 불러오지 못했어요." };
   }
-  if(OV && OV.kind === "stock" && OV.id === s.id && s.symbol + "|" + OV.range === key){
+  const now = ovSubject();
+  if(now && now.symbol === s.symbol && s.symbol + "|" + OV.range === key){
     const el = $("#stChart"); if(el){ el.innerHTML = chartHtml(S.hist[key], s); bindChart(); }
   }
 }
@@ -1676,7 +1747,7 @@ async function signOut(){
 }
 function resetState(){
   S.uid = null; S.email = ""; S.entries = []; S.loaded = false; S.outbox = []; S.lastSync = 0; S.urls = new Map(); S.syncErr = ""; S.sync = "idle"; S.cats = DEFAULT_CATS.slice();
-  S.stocks = []; S.divs = []; S.quotes = {}; S.fx = null; S.quotesAt = 0; S.qErr = ""; S.qLoading = false; S.hist = {};
+  S.stocks = []; S.divs = []; S.quotes = {}; S.fx = null; S.quotesAt = 0; S.qErr = ""; S.qLoading = false; S.hist = {}; S.market = {};
 }
 function onSignedOut(){
   if(!S.uid) return;
@@ -1941,6 +2012,7 @@ document.addEventListener("click", ev => {
   // stocks
   if(ds.sttab){ S.stockTab = ds.sttab; render(); if(ds.sttab !== "div") refreshQuotes(); return; }
   if(ds.stock){ openStock(ds.stock); return; }
+  if(ds.index){ openIndex(ds.index); return; }
   if(ds.div){ openDivForm(ds.div); return; }
   if(ds.divyear){ S.divYear += +ds.divyear; render(); return; }
   if(ds.strange){ setRange(ds.strange); return; }
@@ -2080,11 +2152,11 @@ window.addEventListener("offline", () => updateSyncUI());
 document.addEventListener("visibilitychange", () => {
   if(document.visibilityState !== "visible" || !S.uid) return;
   if(Date.now() - S.lastPull > 30000) pull();
-  if(S.view === "stocks" || (OV && OV.kind === "stock")) refreshQuotes();
+  if(S.view === "stocks" || (OV && (OV.kind === "stock" || OV.kind === "index"))) refreshQuotes();
 });
 setInterval(() => {
-  if(S.uid && document.visibilityState === "visible" && (S.view === "stocks" || (OV && OV.kind === "stock"))) refreshQuotes();
-  if(OV && OV.kind === "stock" && (OV.range === "1d" || OV.range === "5d") && document.visibilityState === "visible") loadHistory();
+  if(S.uid && document.visibilityState === "visible" && (S.view === "stocks" || (OV && (OV.kind === "stock" || OV.kind === "index")))) refreshQuotes();
+  if(OV && (OV.kind === "stock" || OV.kind === "index") && (OV.range === "1d" || OV.range === "5d") && document.visibilityState === "visible") loadHistory();
 }, 60000);
 window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); S.installEvt = e; if(S.uid) renderChrome(); });
 window.addEventListener("appinstalled", () => { S.installEvt = null; toast("산시야를 설치했어요."); if(S.uid) renderChrome(); });
@@ -2128,7 +2200,7 @@ async function startApp(user){
   const [ents, st, ob, ls, urls, stx, dvs, qts] = await Promise.all(["entries","settings","outbox","lastSync","urls","stocks","divs","quotes"].map(n => KV.get(k(n))));
   S.entries = Array.isArray(ents) ? ents : []; S.loaded = Array.isArray(ents);
   S.stocks = Array.isArray(stx) ? stx : []; S.divs = Array.isArray(dvs) ? dvs : [];
-  if(qts && qts.quotes){ S.quotes = qts.quotes; S.fx = qts.fx || null; S.quotesAt = qts.at || 0; }
+  if(qts && qts.quotes){ S.quotes = qts.quotes; S.fx = qts.fx || null; S.quotesAt = qts.at || 0; S.market = qts.market || {}; }
   if(st && Array.isArray(st.categories) && st.categories.length) S.cats = st.categories;
   S.outbox = Array.isArray(ob) ? ob : []; S.lastSync = ls || 0;
   if(Array.isArray(urls) && S.B.kind !== "local") S.urls = new Map(urls.filter(([, c]) => c && c.url && c.exp > Date.now()));
