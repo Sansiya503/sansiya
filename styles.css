@@ -118,7 +118,12 @@ select.sel{height:32px;border:1px solid var(--line-2);border-radius:var(--r);bac
 .seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
 .filters{display:flex;gap:6px;flex-wrap:wrap;margin:-6px 0 16px}
 .mfilters{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:12px}
-.mtags{margin-top:-4px}
+.tagbar{position:fixed;left:0;right:0;bottom:0;z-index:15;background:var(--bg);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
+.tagbar .wrap{display:flex;align-items:center;gap:6px;overflow-x:auto;scrollbar-width:none;padding-block:10px}
+.tagbar .wrap::-webkit-scrollbar{display:none}
+.tagbar .chip,.tagbar .mt-l{flex:none}
+body:has(.tagbar) .shell{padding-bottom:calc(110px + env(safe-area-inset-bottom,0px))}
+body:has(.tagbar) .toast{bottom:calc(70px + env(safe-area-inset-bottom,0px))}
 .mt-l{font-family:var(--f-mono);font-size:11px;letter-spacing:.1em;color:var(--ink-3);margin-right:2px}
 @media (min-width:1101px){
   .brand{order:-2;margin-right:18px}

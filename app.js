@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.6.1";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -524,7 +524,7 @@ function archiveHtml(){
       <button type="button" class="chip ${f.cat === "all" ? "on" : ""}" data-cat="all">모든 분야</button>
       ${S.cats.map(c => `<button type="button" class="chip ${f.cat === c.code ? "on" : ""}" data-cat="${esc(c.code)}">${esc(c.name)}</button>`).join("")}
     </div>
-    ${(() => { const tags = tagCounts().slice(0, 14); return tags.length ? `<div class="mfilters mtags"><span class="mt-l">태그</span>${tags.map(([t, n]) => `<button type="button" class="chip ${f.tag === t ? "on" : ""}" data-tag="${esc(t)}">#${esc(t)} <span class="mono" style="font-size:10.5px;opacity:.7">${n}</span></button>`).join("")}</div>` : ""; })()}
+    ${(() => { const tags = tagCounts().slice(0, 14); return tags.length ? `<nav class="tagbar" aria-label="자주 쓰는 태그"><div class="wrap"><span class="mt-l">태그</span>${tags.map(([t, n]) => `<button type="button" class="chip ${f.tag === t ? "on" : ""}" data-tag="${esc(t)}">#${esc(t)} <span class="mono" style="font-size:10.5px;opacity:.7">${n}</span></button>`).join("")}</div></nav>` : ""; })()}
     <div class="vhead">
       <h2>${esc(title)}</h2><span class="sub mono">${list.length}건</span>
       <div class="tools">
