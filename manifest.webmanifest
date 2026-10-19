@@ -1,0 +1,23 @@
+{
+  "id": "./",
+  "name": "산시야",
+  "short_name": "산시야",
+  "description": "건축·인테리어·AI·게임·주식 등 관심 분야의 스크랩과 취향을 기록하는 나만의 아카이브",
+  "lang": "ko",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F5F6F8",
+  "theme_color": "#F5F6F8",
+  "categories": ["lifestyle", "productivity"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "새 기록", "short_name": "새 기록", "url": "./?new=1", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] }
+  ]
+}
