@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.3.1";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -677,7 +677,7 @@ function avaHtml(s, size){
   const st = logoState[sym];
   const idx = typeof st === "number" ? st : 0;
   const img = /^[A-Za-z0-9.\-]{1,15}$/.test(sym) && st !== "none" && idx < LOGO_SRC.length
-    ? `<img class="st-logo" src="${esc(LOGO_SRC[idx](sym))}" data-sym="${esc(sym)}" data-idx="${idx}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : "";
+    ? `<img class="st-logo${typeof st === "number" ? " ok" : ""}" src="${esc(LOGO_SRC[idx](sym))}" data-sym="${esc(sym)}" data-idx="${idx}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : "";
   return `<span class="st-ava${size ? " " + size : ""}" style="--ava:${c}" aria-hidden="true"><span class="st-ini">${esc(ch0)}</span>${img}</span>`;
 }
 // logo loaded -> show it; failed -> try the next source, then fall back to the initial letter
