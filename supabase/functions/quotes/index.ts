@@ -174,17 +174,19 @@ async function search(q: string) {
 }
 
 async function history(symbol: string, range: string) {
-  const plan: Record<string, [string, string]> = { "1mo": ["1mo", "1d"], "3mo": ["3mo", "1d"], "1y": ["1y", "1d"], "5y": ["5y", "1wk"] };
+  const plan: Record<string, [string, string]> = {
+    "1d": ["1d", "5m"], "5d": ["5d", "30m"], "1mo": ["1mo", "1d"], "3mo": ["3mo", "1d"], "1y": ["1y", "1d"], "5y": ["5y", "1wk"],
+  };
   const [r, iv] = plan[range] || plan["3mo"];
   const key = `${symbol}|${r}`;
   const hit = histCache.get(key);
-  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.data;
+  if (hit && Date.now() - hit.at < (r === "1d" || r === "5d" ? 60_000 : 10 * 60_000)) return hit.data;
   const res = await yahooChart(symbol, r, iv);
   const ts: number[] = res.timestamp || [];
   const cl: (number | null)[] = res.indicators?.quote?.[0]?.close || [];
   const points: [number, number][] = [];
   ts.forEach((t, i) => { const v = cl[i]; if (v != null && isFinite(v)) points.push([t * 1000, Math.round(v * 10000) / 10000]); });
-  const data = { symbol, range: r, currency: res.meta?.currency || "", points };
+  const data = { symbol, range: r, currency: res.meta?.currency || "", prevClose: res.meta?.chartPreviousClose ?? null, points };
   histCache.set(key, { at: Date.now(), data });
   return data;
 }
