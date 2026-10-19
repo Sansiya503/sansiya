@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -44,7 +44,8 @@ function domain(u){ try{ return new URL(u).hostname.replace(/^www\./, ""); }catc
 function isNetErr(err){
   if(!navigator.onLine) return true;
   if(err instanceof TypeError) return true;
-  return /failed to fetch|networkerror|load failed|network request failed|fetch failed|timeout|the network connection/i.test(String(err && (err.message || err) || ""));
+  if(err && err.net) return true;
+  return /failed to fetch|failed to send|networkerror|load failed|network request failed|fetch failed|timeout|the network connection/i.test(String(err && (err.message || err) || ""));
 }
 function errMsg(err){ return String(err && (err.message || err.error_description || err) || "알 수 없는 오류"); }
 function loadScript(src){
@@ -99,6 +100,30 @@ function toRow(e, uid){
     tags:e.tags||[], rating:e.rating||0, status:e.status||"", photos:e.photos||[], example:!!e.example,
     created_at:new Date(e.createdAt||Date.now()).toISOString(), updated_at:new Date(e.updatedAt||Date.now()).toISOString() };
 }
+
+const isoT = t => new Date(t || Date.now()).toISOString();
+const numOrNull = v => v == null || v === "" || !isFinite(+v) ? null : +v;
+const TABLES = {
+  stocks: {
+    order: ["sort", true],
+    from: r => ({ id:r.id, symbol:r.symbol, market:r.market, name:r.name, currency:r.currency || "KRW", watch:!!r.watch,
+      qty:+r.qty || 0, avgPrice:+r.avg_price || 0, target:numOrNull(r.target_price), memo:r.memo || "",
+      notes:Array.isArray(r.notes) ? r.notes : [], sort:r.sort || 0,
+      createdAt:Date.parse(r.created_at) || 0, updatedAt:Date.parse(r.updated_at) || 0 }),
+    to: (s, uid) => ({ id:s.id, user_id:uid, symbol:s.symbol, market:s.market, name:s.name, currency:s.currency || "KRW", watch:!!s.watch,
+      qty:+s.qty || 0, avg_price:+s.avgPrice || 0, target_price:numOrNull(s.target), memo:s.memo || "",
+      notes:s.notes || [], sort:s.sort || 0, created_at:isoT(s.createdAt), updated_at:isoT(s.updatedAt) })
+  },
+  dividends: {
+    order: ["date", false],
+    from: r => ({ id:r.id, stockId:r.stock_id || null, symbol:r.symbol || "", name:r.name || "", date:r.date,
+      amount:+r.amount || 0, currency:r.currency || "KRW", krw:numOrNull(r.krw_amount), memo:r.memo || "",
+      createdAt:Date.parse(r.created_at) || 0, updatedAt:Date.parse(r.updated_at) || 0 }),
+    to: (d, uid) => ({ id:d.id, user_id:uid, stock_id:d.stockId || null, symbol:d.symbol || "", name:d.name || "", date:d.date,
+      amount:+d.amount || 0, currency:d.currency || "KRW", krw_amount:numOrNull(d.krw), memo:d.memo || "",
+      created_at:isoT(d.createdAt), updated_at:isoT(d.updatedAt) })
+  }
+};
 
 function makeSupabaseBackend(url, key){
   let sb = null, user = null;
@@ -178,7 +203,34 @@ function makeSupabaseBackend(url, key){
       }
       return out;
     },
-    async removePhotos(paths){ if(!paths.length) return; const { error } = await sb.storage.from("photos").remove(paths); if(error) throw error; }
+    async removePhotos(paths){ if(!paths.length) return; const { error } = await sb.storage.from("photos").remove(paths); if(error) throw error; },
+    async fetchRows(table){
+      const T = TABLES[table], out = [];
+      for(let from = 0; ; from += 1000){
+        const { data, error } = await sb.from(table).select("*").order(T.order[0], { ascending:T.order[1] }).order("id").range(from, from + 999);
+        if(error) throw error;
+        out.push(...data); if(data.length < 1000) break;
+      }
+      return out.map(T.from);
+    },
+    async upsertRow(table, rec){
+      let row = TABLES[table].to(rec, user.id);
+      let { error } = await sb.from(table).upsert(row);
+      if(error && error.code === "23503" && table === "dividends"){ row = { ...row, stock_id:null }; ({ error } = await sb.from(table).upsert(row)); }
+      if(error) throw error;
+    },
+    async deleteRow(table, id){ const { error } = await sb.from(table).delete().eq("id", id); if(error) throw error; },
+    async invoke(body){
+      const { data, error } = await sb.functions.invoke("quotes", { body });
+      if(error){
+        let msg = error.message || "시세를 불러오지 못했어요.";
+        try{ const j = await error.context.json(); if(j && j.error) msg = j.error; }catch(e){}
+        const err = new Error(msg);
+        if(error.name === "FunctionsFetchError" || error.name === "FunctionsRelayError") err.net = true;
+        throw err;
+      }
+      return data;
+    }
   };
 }
 
@@ -213,7 +265,14 @@ function makeLocalBackend(){
       }
       return out;
     },
-    async removePhotos(paths){ for(const p of paths) await KV.del("local:photo:" + p); }
+    async removePhotos(paths){ for(const p of paths) await KV.del("local:photo:" + p); },
+    async fetchRows(table){ net(); return Object.values((await KV.get("local:" + table)) || {}); },
+    async upsertRow(table, rec){ net(); const m = (await KV.get("local:" + table)) || {}; m[rec.id] = JSON.parse(JSON.stringify(rec)); await KV.set("local:" + table, m); },
+    async deleteRow(table, id){ net(); const m = (await KV.get("local:" + table)) || {}; delete m[id]; await KV.set("local:" + table, m); },
+    async invoke(body){
+      if(window.__sansiyaFakeQuotes) return window.__sansiyaFakeQuotes(body);
+      throw new Error("이 기기 저장 모드에서는 시세를 불러올 수 없어요.");
+    }
   };
 }
 
@@ -224,10 +283,13 @@ const S = {
   view:"archive", filter:{cat:"all", type:"all", tag:null, q:""},
   sort:"date-desc", layout:"list", calMonth:null, calSel:null,
   outbox:[], lastSync:0, lastPull:0, sync:"idle", syncErr:"",
-  urls:new Map(), installEvt:null
+  urls:new Map(), installEvt:null,
+  stocks:[], divs:[], quotes:{}, fx:null, quotesAt:0, qLoading:false, qErr:"",
+  stockTab:"hold", divYear:new Date().getFullYear(), hist:{},
+  holdSort:"value", holdShow:"value", hideAmt:false
 };
-try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; }catch(e){}
-function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort })); }catch(e){} }
+try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; }catch(e){}
+function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort, holdSort:S.holdSort, holdShow:S.holdShow, hideAmt:S.hideAmt })); }catch(e){} }
 const k = name => `u:${S.uid}:${name}`;
 const saveCache = () => KV.set(k("entries"), S.entries);
 const saveOutbox = () => KV.set(k("outbox"), S.outbox);
@@ -235,7 +297,9 @@ const catOf = code => S.cats.find(c => c.code === code) || { code:code || "ETC",
 const sheetNo = e => `${esc(e.cat || "ETC")}-${pad(e.seq || 0, 3)}`;
 
 /* ---------- sync ---------- */
-const opKey = o => o.op === "settings" ? "settings" : (o.entry ? o.entry.id : o.id);
+const opKey = o => o.op === "settings" ? "settings"
+  : (o.op === "row" || o.op === "rowdel") ? `${o.table}:${o.rec ? o.rec.id : o.id}`
+  : (o.entry ? o.entry.id : o.id);
 function setSync(s){ S.sync = s; updateSyncUI(); }
 function updateSyncUI(){
   const b = $("#syncBtn"); if(!b) return;
@@ -267,6 +331,10 @@ function flush(){
           if(op.photos && op.photos.length) await S.B.removePhotos(op.photos).catch(() => {});
         }else if(op.op === "settings"){
           await S.B.saveSettings(op.settings);
+        }else if(op.op === "row"){
+          await S.B.upsertRow(op.table, op.rec);
+        }else if(op.op === "rowdel"){
+          await S.B.deleteRow(op.table, op.id);
         }
         S.outbox = S.outbox.filter(o => o !== op); await saveOutbox(); S.syncErr = "";
       }catch(err){
@@ -283,8 +351,11 @@ async function enqueue(op){
   const prev = S.outbox.find(o => opKey(o) === key);
   if(prev && prev.removed && op.op === "upsert") op.removed = [...new Set([...(prev.removed || []), ...(op.removed || [])])];
   if(prev && prev.removed && op.op === "delete") op.photos = [...new Set([...(op.photos || []), ...prev.removed])];
-  S.outbox = S.outbox.filter(o => opKey(o) !== key);
-  S.outbox.push(op); await saveOutbox(); updateSyncUI(); markPending();
+  // replace a pending change to the same record in place, so related changes keep their order
+  // (an in-flight op that gets replaced is simply sent again with the newer content)
+  const at = S.outbox.findIndex(o => opKey(o) === key);
+  if(at >= 0) S.outbox[at] = op; else S.outbox.push(op);
+  await saveOutbox(); updateSyncUI(); markPending();
   const ok = await flush();
   if(ok){ S.lastSync = Date.now(); KV.set(k("lastSync"), S.lastSync); setSync("ok"); }
   markPending();
@@ -296,12 +367,12 @@ async function pull(){
   if(!ok){ if(!S.loaded){ S.loaded = true; refresh(); } return; }
   setSync("busy");
   try{
-    const [rows, st] = await Promise.all([S.B.fetchEntries(), S.B.fetchSettings()]);
+    const [rows, st, stocks, divs] = await Promise.all([S.B.fetchEntries(), S.B.fetchSettings(), S.B.fetchRows("stocks"), S.B.fetchRows("dividends")]);
     if(S.outbox.length){ setSync("idle"); return; }
-    S.entries = rows;
+    S.entries = rows; S.stocks = stocks; S.divs = divs;
     if(st && Array.isArray(st.categories) && st.categories.length) S.cats = st.categories.map(c => ({ code:c.code, name:c.name }));
     S.loaded = true; S.lastSync = Date.now();
-    await Promise.all([saveCache(), KV.set(k("settings"), { categories:S.cats }), KV.set(k("lastSync"), S.lastSync)]);
+    await Promise.all([saveCache(), saveStocks(), saveDivs(), KV.set(k("settings"), { categories:S.cats }), KV.set(k("lastSync"), S.lastSync)]);
     setSync("ok"); refresh();
   }catch(err){
     S.loaded = true;
@@ -312,8 +383,10 @@ async function pull(){
 function markPending(){
   if(OV && OV.kind === "edit") return;
   if(OV && OV.kind === "settings"){ renderSettings(); return; }
-  if(S.view === "archive" || S.view === "calendar") render();
+  if(S.view === "archive" || S.view === "calendar" || S.view === "stocks") render();
 }
+const saveStocks = () => KV.set(k("stocks"), S.stocks);
+const saveDivs = () => KV.set(k("divs"), S.divs);
 
 /* ---------- photo URLs ---------- */
 async function ensureUrls(paths){
@@ -376,7 +449,7 @@ function tagCounts(list = S.entries){
 const pendingIds = () => new Set(S.outbox.filter(o => o.op === "upsert").map(o => o.entry.id));
 
 /* ---------- render: chrome ---------- */
-const VIEWS = [["archive","아카이브"],["calendar","캘린더"],["stats","통계 · 회고"]];
+const VIEWS = [["archive","아카이브"],["calendar","캘린더"],["stats","통계 · 회고"],["stocks","주식"]];
 function renderChrome(){
   $("#brandCount").textContent = S.loaded ? `Personal register · ${S.entries.length}건` : "Personal register";
   $("#tabbar").innerHTML = VIEWS.map(([v, l]) => `<button type="button" data-view="${v}" aria-current="${S.view === v}">${l}</button>`).join("");
@@ -408,6 +481,7 @@ function render(){
   const m = $("#main");
   if(S.view === "archive") m.innerHTML = archiveHtml();
   else if(S.view === "calendar") m.innerHTML = calendarHtml();
+  else if(S.view === "stocks"){ m.innerHTML = stocksHtml(); bindTips(m); }
   else m.innerHTML = statsHtml();
   hydrateImages();
 }
@@ -416,6 +490,7 @@ function refresh(){
   render();
   if(OV && OV.kind === "detail") renderDetail();
   if(OV && OV.kind === "settings") renderSettings();
+  if(OV && OV.kind === "stock") updateStockDetail();
 }
 function rowHtml(e, pend){
   const c = catOf(e.cat), ph = e.photos || [];
@@ -568,6 +643,668 @@ function statsHtml(){
         ${tags.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px">${tags.map(([t, n]) => `<button type="button" class="chip" data-gotag="${esc(t)}">#${esc(t)} <span class="mono" style="font-size:10.5px;opacity:.7">${n}</span></button>`).join("")}</div>` : `<p class="tag">태그를 붙이면 여기서 한눈에 보여요.</p>`}
       </section>
     </div>`;
+}
+
+/* ---------- stocks: helpers ---------- */
+const PAL = ["#FFD580","#FFC067","#FFB343","#FFA500","#FFB27F","#FFA95C"];
+const num = v => typeof v === "number" && isFinite(v);
+const codeOf = sym => String(sym || "").replace(/\.(KS|KQ)$/, "");
+const exchLabel = s => s.market === "KR" ? (/\.KQ$/.test(s.symbol) ? "코스닥" : "코스피") : "미국";
+const parseNum = v => { const n = parseFloat(String(v ?? "").replace(/[,\s원$₩주]/g, "")); return isFinite(n) ? n : null; };
+function avaHtml(s, size){
+  let h = 0; for(const ch of String(s.symbol || s.name || "?")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const c = PAL[h % PAL.length];
+  const ch0 = String(s.name || s.symbol || "?").trim().charAt(0).toUpperCase();
+  return `<span class="st-ava${size ? " " + size : ""}" style="--ava:${c}" aria-hidden="true">${esc(ch0)}${s.market === "US" ? "<i>US</i>" : ""}</span>`;
+}
+function fmtMoney(v, cur, sign){
+  if(!num(v)) return "-";
+  const sg = sign && v > 0 ? "+" : (v < 0 ? "-" : "");
+  const a = Math.abs(v);
+  return cur === "USD" ? `${sg}$${a.toLocaleString("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 })}` : `${sg}${Math.round(a).toLocaleString("ko-KR")}원`;
+}
+// my own amounts (valuation, profit, principal, dividends) can be hidden; prices and % stay visible
+const my = (v, cur, sign) => S.hideAmt ? (cur === "USD" ? "$••••" : "••••원") : fmtMoney(v, cur, sign);
+const fmtPct = (v, d = 2) => num(v) ? `${v > 0 ? "+" : v < 0 ? "-" : ""}${Math.abs(v).toFixed(d)}%` : "-";
+const tone = v => !num(v) || Math.abs(v) < 1e-9 ? "flat" : v > 0 ? "up" : "down";
+const fmtQty = q => (+q || 0).toLocaleString("ko-KR", { maximumFractionDigits:6 });
+function fmtShort(v){
+  if(!num(v)) return "-";
+  const a = Math.abs(v);
+  if(a >= 1e8) return (v / 1e8).toFixed(a >= 1e9 ? 0 : 1).replace(/\.0$/, "") + "억";
+  if(a >= 1e4) return (v / 1e4).toFixed(a >= 1e5 ? 0 : 1).replace(/\.0$/, "") + "만";
+  return Math.round(v).toLocaleString("ko-KR");
+}
+function fmtAgo(t){
+  const s = (Date.now() - t) / 1000;
+  return s < 60 ? "방금" : s < 3600 ? `${Math.floor(s / 60)}분 전` : fmtTime(t);
+}
+const fxRate = () => S.fx && num(S.fx.usdkrw) ? S.fx.usdkrw : null;
+const toKRW = (v, cur) => !num(v) ? null : cur !== "USD" ? v : (fxRate() ? v * fxRate() : null);
+const quoteOf = s => S.quotes[s.symbol] || null;
+const divKRW = d => num(d.krw) ? d.krw : toKRW(d.amount, d.currency);
+function position(s){
+  const q = quoteOf(s), price = q && num(q.price) ? q.price : null;
+  const qty = +s.qty || 0, avg = +s.avgPrice || 0, cost = qty * avg;
+  const value = price != null ? qty * price : null;
+  const pl = value != null ? value - cost : null;
+  const plPct = value != null && cost > 0 ? pl / cost * 100 : null;
+  const day = q && num(q.change) ? qty * q.change : null;
+  return { q, price, qty, avg, cost, value, pl, plPct, day,
+    valueKRW: toKRW(value != null ? value : cost, s.currency), costKRW: toKRW(cost, s.currency),
+    plKRW: toKRW(pl, s.currency), dayKRW: toKRW(day, s.currency) };
+}
+function portfolio(){
+  let value = 0, cost = 0, day = 0, missing = 0, fxMissing = false;
+  const rows = S.stocks.filter(s => +s.qty > 0).map(s => {
+    const p = position(s);
+    if(p.price == null) missing++;
+    if(s.currency === "USD" && !fxRate()) fxMissing = true;
+    value += p.valueKRW || 0; cost += p.costKRW || 0; day += p.dayKRW || 0;
+    return { s, p };
+  }).sort((a, b) => (b.p.valueKRW || 0) - (a.p.valueKRW || 0));
+  const pl = value - cost;
+  return { rows, value, cost, pl, plPct: cost > 0 ? pl / cost * 100 : null, day, missing, fxMissing,
+    hasUS: rows.some(r => r.s.currency === "USD") };
+}
+
+/* ---------- stocks: quotes ---------- */
+async function refreshQuotes(force, only){
+  if(!S.B || !S.uid || (S.qLoading && !only)) return;
+  if(!force && !only && Date.now() - S.quotesAt < 55e3) return;
+  if(!navigator.onLine){ S.qErr = "offline"; paintQuotes(); return; }
+  const symbols = only || [...new Set(S.stocks.map(s => s.symbol))];
+  if(!only){ S.qLoading = true; paintQuotes(true); }
+  try{
+    const d = await S.B.invoke({ action:"quotes", symbols });
+    Object.assign(S.quotes, d.quotes || {});
+    if(d.fx) S.fx = d.fx;
+    if(!only){ S.quotesAt = d.at || Date.now(); S.qErr = ""; }
+    KV.set(k("quotes"), { quotes:S.quotes, fx:S.fx, at:S.quotesAt });
+  }catch(e){
+    if(!only) S.qErr = isNetErr(e) ? "offline" : errMsg(e);
+  }finally{
+    if(!only) S.qLoading = false;
+    paintQuotes();
+  }
+}
+function paintQuotes(onlyButton){
+  if(onlyButton){ const b = $("#stRefresh"); if(b) b.textContent = "불러오는 중…"; return; }
+  if(S.view === "stocks") render();
+  if(OV && OV.kind === "stock") updateStockDetail();
+  if(OV && OV.kind === "stform"){ const el = $("#stfPrice"); if(el) el.innerHTML = stfPriceHtml(); }
+  if(OV && OV.kind === "divform"){ const el = $("#dvKrwHint"); if(el) el.textContent = dvKrwHint(); }
+}
+const eyeBtn = () => `<button type="button" class="st-eye" data-act="stEye" aria-pressed="${S.hideAmt}">${S.hideAmt ? "금액 보기" : "금액 숨기기"}</button>`;
+const refreshBtn = () => `<button type="button" class="st-refresh" id="stRefresh" data-act="stRefresh" title="시세 새로고침">${
+  S.qLoading ? "불러오는 중…" : S.qErr === "offline" ? `오프라인${S.quotesAt ? " · " + fmtTime(S.quotesAt) : ""}` : S.qErr ? "다시 불러오기" : S.quotesAt ? `${fmtAgo(S.quotesAt)} 갱신` : "시세 불러오기"}</button>`;
+function quoteLine(q, s){
+  if(!q) return S.qErr && S.qErr !== "offline" ? esc(S.qErr) : "시세를 아직 불러오지 못했어요.";
+  if(q.source === "krx-close") return `${esc(q.asOf || "")} 종가 기준 · 실시간 시세를 못 불러와 전 영업일 종가를 보여 줘요.`;
+  const t = q.time ? fmtTime(q.time * 1000) : "";
+  return `${t ? t + " 기준 · " : ""}${s.market === "KR" ? "한국 시세는 약 20분 늦을 수 있어요." : "시세는 조금 늦을 수 있어요."}`;
+}
+
+/* ---------- stocks: main view ---------- */
+function stocksHtml(){
+  const tabs = [["hold","내 주식"],["watch","관심"],["div","배당"]];
+  const body = S.stockTab === "watch" ? watchHtml() : S.stockTab === "div" ? divHtml() : holdHtml();
+  return `<div class="st-wrap">
+    <div class="st-tabs" role="tablist">${tabs.map(([key, l]) => `<button type="button" role="tab" data-sttab="${key}" aria-selected="${S.stockTab === key}">${l}</button>`).join("")}</div>
+    ${body}
+    <p class="st-source">시세·차트: Yahoo Finance (지연될 수 있어요) · 한국 종목 정보: aikstockdata.com (금융위원회 공공데이터). 투자 판단의 근거가 아니라 기록용이에요.</p>
+  </div>`;
+}
+function holdRowHtml(s, p){
+  const krwOk = s.currency !== "USD" || fxRate();
+  let right;
+  if(S.holdShow === "price"){
+    const q = p.q;
+    right = `<b>${q ? fmtMoney(q.price, s.currency) : "-"}</b><small class="${tone(q && q.changePct)}">${q ? fmtPct(q.changePct, 1) : "시세 없음"}</small>`;
+  }else{
+    const val = krwOk ? my(p.valueKRW, "KRW") : my(p.value != null ? p.value : p.cost, s.currency);
+    const pl = p.pl == null ? "시세 없음" : `${krwOk ? my(p.plKRW, "KRW", true) : my(p.pl, s.currency, true)} (${fmtPct(p.plPct, 1)})`;
+    right = `<b>${val}</b><small class="${tone(p.pl)}">${pl}</small>`;
+  }
+  return `<button type="button" class="st-row" data-stock="${esc(s.id)}">${avaHtml(s)}
+    <span class="st-main"><b>${esc(s.name)}</b><small>${S.hideAmt ? "" : fmtQty(p.qty) + "주 · "}평균 ${fmtMoney(p.avg, s.currency)}</small></span>
+    <span class="st-right">${right}</span></button>`;
+}
+function holdHtml(){
+  const P = portfolio();
+  const label = `<div class="st-label">내 주식 평가금액 <span class="st-tools">${eyeBtn()}${refreshBtn()}</span></div>`;
+  if(!P.rows.length){
+    return `<section class="st-hero">${label}<div class="st-big">${my(0, "KRW")}</div></section>
+      <div class="empty"><h3>보유 종목을 추가해 보세요</h3><p>종목을 검색해서 수량과 평균 단가를 넣으면 평가금액과 수익률을 자동으로 계산해요.</p><button class="btn primary" type="button" data-act="stAdd">+ 종목 추가</button></div>`;
+  }
+  const hero = `<section class="st-hero">${label}
+    <div class="st-big">${my(P.value, "KRW")}</div>
+    <div class="st-chg ${tone(P.pl)}">${S.hideAmt ? "수익률 " : my(P.pl, "KRW", true) + " "}(${fmtPct(P.plPct)})</div>
+    <dl class="st-facts">
+      <div><dt>어제보다</dt><dd class="${tone(P.day)}">${my(P.day, "KRW", true)}</dd></div>
+      <div><dt>투자 원금</dt><dd>${my(P.cost, "KRW")}</dd></div>
+      ${P.hasUS ? `<div><dt>달러 환율</dt><dd>${fxRate() ? fxRate().toLocaleString("ko-KR", { maximumFractionDigits:2 }) + "원" : "-"}</dd></div>` : ""}
+    </dl>
+    ${P.missing ? `<p class="st-warn">시세를 못 불러온 종목 ${P.missing}개는 평균 단가로 계산했어요.</p>` : ""}
+    ${P.hasUS ? `<p class="st-warn">미국 주식은 지금 환율로 원화 환산해요.</p>` : ""}
+  </section>`;
+  const sorters = {
+    value: (a, b) => (b.p.valueKRW || 0) - (a.p.valueKRW || 0),
+    pl: (a, b) => (num(b.p.plPct) ? b.p.plPct : -1e9) - (num(a.p.plPct) ? a.p.plPct : -1e9),
+    name: (a, b) => a.s.name.localeCompare(b.s.name, "ko")
+  };
+  const rows = P.rows.slice().sort(sorters[S.holdSort] || sorters.value);
+  const ctrl = `<div class="st-ctrl">
+    <select class="sel" id="holdSort" aria-label="정렬">${[["value","평가금순"],["pl","수익률순"],["name","이름순"]].map(([v, l]) => `<option value="${v}" ${S.holdSort === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+    <div class="seg" role="group" aria-label="보기">${[["value","평가금"],["price","현재가"]].map(([v, l]) => `<button type="button" data-holdshow="${v}" aria-pressed="${S.holdShow === v}">${l}</button>`).join("")}</div>
+  </div>`;
+  const groups = [["KR","국내 주식"],["US","해외 주식"]].map(([m, l]) => [m, l, rows.filter(r => r.s.market === m)]).filter(g => g[2].length);
+  const body = groups.length > 1
+    ? groups.map(([m, l, gr]) => `<div class="st-group"><span>${l} ${gr.length}</span><span>${my(gr.reduce((a, r) => a + (r.p.valueKRW || 0), 0), "KRW")}</span></div>${gr.map(r => holdRowHtml(r.s, r.p)).join("")}`).join("")
+    : rows.map(r => holdRowHtml(r.s, r.p)).join("");
+  const list = `<section class="st-sec">
+    <div class="st-sec-h"><h3>보유 종목<span>${P.rows.length}</span></h3><button class="btn small" type="button" data-act="stAdd">+ 종목 추가</button></div>
+    ${ctrl}<div class="st-list">${body}</div></section>`;
+  const alloc = P.rows.length > 1 && P.value > 0 ? `<section class="st-sec">
+    <div class="st-sec-h"><h3>종목 비중</h3></div>
+    <div class="st-alloc">${P.rows.map(({ s, p }) => { const pct = (p.valueKRW || 0) / P.value * 100;
+      return `<div class="st-al"><span class="nm">${esc(s.name)}</span><span class="tr"><span class="fl" style="width:${Math.max(0, Math.min(100, pct)).toFixed(1)}%"></span></span><span class="pc">${pct.toFixed(1)}%</span></div>`; }).join("")}</div>
+  </section>` : "";
+  return hero + list + alloc;
+}
+function targetInfo(s){
+  const q = quoteOf(s);
+  if(!num(s.target)) return "";
+  if(!q || !num(q.price)) return `목표가 ${fmtMoney(s.target, s.currency)}`;
+  const gap = (s.target - q.price) / q.price * 100;
+  return gap <= 0 ? `목표가 ${fmtMoney(s.target, s.currency)} 도달` : `목표가 ${fmtMoney(s.target, s.currency)} · ${gap.toFixed(1)}% 남음`;
+}
+function watchHtml(){
+  const list = S.stocks.filter(s => s.watch).sort((a, b) => (a.sort - b.sort) || (a.createdAt - b.createdAt));
+  const head = `<section class="st-hero st-hero-sm"><div class="st-label">관심 종목 ${refreshBtn()}</div></section>`;
+  if(!list.length){
+    return head + `<div class="empty"><h3>관심 종목을 모아 보세요</h3><p>지켜보는 종목을 추가하면 현재가와 오늘 등락, 목표가까지 남은 거리를 한눈에 볼 수 있어요.</p><button class="btn primary" type="button" data-act="stAdd">+ 종목 추가</button></div>`;
+  }
+  return head + `<section class="st-sec st-sec-first">
+    <div class="st-sec-h"><h3>관심 종목<span>${list.length}</span></h3><button class="btn small" type="button" data-act="stAdd">+ 종목 추가</button></div>
+    <div class="st-list">${list.map(s => {
+      const q = quoteOf(s);
+      const sub = targetInfo(s) || (s.memo ? s.memo.split("\n")[0] : `${codeOf(s.symbol)} · ${exchLabel(s)}`);
+      return `<button type="button" class="st-row" data-stock="${esc(s.id)}">${avaHtml(s)}
+        <span class="st-main"><b>${esc(s.name)}</b><small>${esc(sub)}</small></span>
+        <span class="st-right"><b>${q ? fmtMoney(q.price, s.currency) : "-"}</b><small class="${tone(q && q.changePct)}">${q ? fmtPct(q.changePct, 1) : "시세 없음"}</small></span></button>`;
+    }).join("")}</div></section>`;
+}
+function divHtml(){
+  const y = S.divYear, nowY = new Date().getFullYear();
+  const years = S.divs.map(d => +String(d.date).slice(0, 4)).filter(Boolean);
+  const minY = Math.min(nowY, ...years);
+  const sum = list => list.reduce((a, d) => a + (divKRW(d) || 0), 0);
+  const inYear = S.divs.filter(d => String(d.date).startsWith(String(y)));
+  const months = Array.from({ length:12 }, (_, i) => sum(inYear.filter(d => +String(d.date).slice(5, 7) === i + 1)));
+  const total = sum(inYear), last = sum(S.divs.filter(d => String(d.date).startsWith(String(y - 1)))), all = sum(S.divs);
+  const monthsElapsed = y === nowY ? new Date().getMonth() + 1 : 12;
+  const usdMissing = S.divs.some(d => d.currency === "USD" && !num(d.krw)) && !fxRate();
+  const hero = `<section class="st-hero">
+    <div class="st-label">${y}년 받은 배당금
+      <span class="st-tools">${eyeBtn()}</span><span class="st-year"><button type="button" class="icon-btn sm" data-divyear="-1" aria-label="이전 해" ${y <= minY ? "disabled" : ""}>‹</button><button type="button" class="icon-btn sm" data-divyear="1" aria-label="다음 해" ${y >= nowY ? "disabled" : ""}>›</button></span></div>
+    <div class="st-big">${my(total, "KRW")}</div>
+    <dl class="st-facts">
+      <div><dt>${y - 1}년</dt><dd>${my(last, "KRW")}</dd></div>
+      <div><dt>월평균</dt><dd>${my(total / monthsElapsed, "KRW")}</dd></div>
+      <div><dt>누적</dt><dd>${my(all, "KRW")}</dd></div>
+    </dl>
+    ${usdMissing ? `<p class="st-warn">달러 배당 일부는 환율을 불러오면 원화로 합산돼요.</p>` : ""}
+  </section>`;
+  const chart = `<section class="st-sec"><div class="st-sec-h"><h3>월별 배당</h3><button class="btn small" type="button" data-act="divAdd">+ 배당 기록</button></div>
+    <div class="st-chart" data-tipwrap>${divChartSvg(months, y)}<div class="st-tip" hidden></div></div></section>`;
+  const rows = inYear.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)) || (b.createdAt - a.createdAt));
+  let listHtml = "";
+  if(!S.divs.length){
+    listHtml = `<div class="empty"><h3>받은 배당금을 기록해 보세요</h3><p>배당이 들어올 때마다 적어 두면 월별·연도별로 얼마나 받았는지 모아서 보여 줘요.</p><button class="btn primary" type="button" data-act="divAdd">+ 배당 기록</button></div>`;
+  }else if(!rows.length){
+    listHtml = `<p class="st-warn" style="margin:12px 0 0">${y}년에는 기록한 배당이 없어요.</p>`;
+  }else{
+    let cur = 0;
+    for(const d of rows){
+      const m = +String(d.date).slice(5, 7);
+      if(m !== cur){ cur = m; listHtml += `<div class="st-month"><span>${m}월</span><span>${my(months[m - 1], "KRW")}</span></div>`; }
+      const s = S.stocks.find(x => x.id === d.stockId) || { symbol:d.symbol || d.name, name:d.name || "배당", market:d.currency === "USD" ? "US" : "KR" };
+      listHtml += `<button type="button" class="st-row" data-div="${esc(d.id)}">${avaHtml(s, "sm")}
+        <span class="st-main"><b>${esc(d.name || s.name)}</b><small>${String(d.date).slice(5).replace("-", ".")}${d.memo ? " · " + esc(d.memo) : ""}</small></span>
+        <span class="st-right"><b>${num(divKRW(d)) ? my(divKRW(d), "KRW") : my(d.amount, d.currency)}</b>${d.currency === "USD" ? `<small class="flat">${my(d.amount, "USD")}</small>` : ""}</span></button>`;
+    }
+    listHtml = `<div class="st-list">${listHtml}</div>`;
+  }
+  return hero + chart + `<section class="st-sec"><div class="st-sec-h"><h3>배당 내역</h3></div>${listHtml}</section>`;
+}
+function barPath(x, y, w, h, r){
+  r = Math.min(r, h, w / 2);
+  return `M${x.toFixed(1)} ${(y + h).toFixed(1)}V${(y + r).toFixed(1)}Q${x.toFixed(1)} ${y.toFixed(1)} ${(x + r).toFixed(1)} ${y.toFixed(1)}H${(x + w - r).toFixed(1)}Q${(x + w).toFixed(1)} ${y.toFixed(1)} ${(x + w).toFixed(1)} ${(y + r).toFixed(1)}V${(y + h).toFixed(1)}Z`;
+}
+function divChartSvg(months, y){
+  const W = Math.max(280, Math.min(720, (document.getElementById("main") || {}).clientWidth || 600)), H = 190, T = 24, B = 26, bw = W / 12, mx = Math.max(...months, 1);
+  const nowM = new Date().getFullYear() === y ? new Date().getMonth() : -1;
+  let marks = "", hits = "";
+  months.forEach((v, i) => {
+    const h = v > 0 ? Math.max(3, (H - T - B) * v / mx) : 0, w = bw * 0.56, x = i * bw + (bw - w) / 2, yy = H - B - h;
+    const tip = `${y}년 ${i + 1}월 · ${my(v, "KRW")}`;
+    if(v > 0) marks += `<path d="${barPath(x, yy, w, h, 4)}" fill="var(--accent)"/>${S.hideAmt ? "" : `<text x="${(x + w / 2).toFixed(1)}" y="${(yy - 6).toFixed(1)}" text-anchor="middle" font-size="11" fill="var(--ink-2)">${fmtShort(v)}</text>`}`;
+    marks += `<text x="${(x + w / 2).toFixed(1)}" y="${H - 7}" text-anchor="middle" font-size="11" fill="${i === nowM ? "var(--ink)" : "var(--ink-3)"}"${i === nowM ? ' font-weight="600"' : ""}>${i + 1}월</text>`;
+    hits += `<rect x="${(i * bw).toFixed(1)}" y="${T}" width="${bw.toFixed(1)}" height="${H - T - B}" fill="transparent" data-tip="${esc(tip)}"/>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${y}년 월별 배당금"><line x1="0" x2="${W}" y1="${H - B}" y2="${H - B}" stroke="var(--line-2)"/>${marks}${hits}</svg>`;
+}
+// shared hover tooltip for any [data-tip] mark inside [data-tipwrap]
+function bindTips(root){
+  root.querySelectorAll("[data-tipwrap]").forEach(wrap => {
+    const tip = wrap.querySelector(".st-tip"); if(!tip) return;
+    const show = ev => {
+      const t = ev.target.closest && ev.target.closest("[data-tip]");
+      if(!t){ tip.hidden = true; return; }
+      const wr = wrap.getBoundingClientRect(), r = t.getBoundingClientRect();
+      tip.textContent = t.dataset.tip; tip.hidden = false;
+      const half = tip.offsetWidth / 2, cx = r.left - wr.left + r.width / 2;
+      tip.style.left = Math.max(half, Math.min(wr.width - half, cx)) + "px";
+      tip.style.top = Math.max(18, (r.top - wr.top) + r.height * 0.35) + "px";
+    };
+    wrap.addEventListener("pointermove", show);
+    wrap.addEventListener("pointerdown", show);
+    wrap.addEventListener("pointerleave", () => { tip.hidden = true; });
+  });
+}
+
+/* ---------- stocks: detail ---------- */
+let CH = null; // geometry of the price chart on screen
+const RANGES = [["1d","1일"],["5d","1주"],["1mo","1달"],["3mo","3달"],["1y","1년"],["5y","5년"]];
+function openStock(id){
+  if(!S.stocks.find(s => s.id === id)) return;
+  if(OV) endOvKeepHistory();
+  OV = { kind:"stock", id, range:"1d", confirm:false };
+  renderStockDetail(); loadHistory();
+}
+function stockParts(s){
+  const p = position(s), q = p.q, cur = s.currency;
+  const price = `<div class="st-big">${q ? fmtMoney(q.price, cur) : "-"}</div>
+    <div class="st-chg ${tone(q && q.change)}"><span class="st-muted0">어제보다</span> ${q && num(q.change) ? `${fmtMoney(q.change, cur, true)} (${fmtPct(q.changePct)})` : "시세 없음"}</div>
+    <p class="st-note">${quoteLine(q, s)}${cur === "USD" && q && fxRate() ? ` · 원화 약 ${fmtMoney(q.price * fxRate(), "KRW")}` : ""}</p>`;
+  const krw = v => cur === "USD" && num(toKRW(v, cur)) ? `<small>${my(toKRW(v, cur), "KRW", false)}</small>` : "";
+  const pos = p.qty > 0 ? `<h4 class="st-h4">내 주식</h4><dl class="st-grid">
+      <div><dt>보유 수량</dt><dd>${S.hideAmt ? "••" : fmtQty(p.qty)}주</dd></div>
+      <div><dt>1주 평균금액</dt><dd>${fmtMoney(p.avg, cur)}</dd></div>
+      <div><dt>총 금액</dt><dd>${my(p.value != null ? p.value : p.cost, cur)}${krw(p.value != null ? p.value : p.cost)}</dd></div>
+      <div><dt>투자 원금</dt><dd>${my(p.cost, cur)}${krw(p.cost)}</dd></div>
+      <div><dt>총 수익</dt><dd class="${tone(p.pl)}">${p.pl != null ? my(p.pl, cur, true) : "-"}<small class="${tone(p.pl)}">${fmtPct(p.plPct)}</small></dd></div>
+      <div><dt>어제보다</dt><dd class="${tone(p.day)}">${p.day != null ? my(p.day, cur, true) : "-"}<small class="${tone(p.day)}">${p.q && num(p.q.changePct) ? fmtPct(p.q.changePct) : ""}</small></dd></div>
+    </dl>` : "";
+  const target = num(s.target) ? `<div class="st-target"><span>목표가</span><b>${fmtMoney(s.target, cur)}</b>${q && num(q.price) ? `<small>${s.target > q.price ? `지금보다 ${fmtPct((s.target - q.price) / q.price * 100, 1)}` : "도달했어요"}</small>` : ""}</div>` : "";
+  const notes = `<h4 class="st-h4">노트<span class="st-muted">${(s.notes || []).length || ""}</span></h4>
+    ${(s.notes || []).length ? `<ul class="st-notes">${s.notes.map(n => `<li><time>${esc(String(n.date || "").replace(/-/g, "."))}</time><p>${linkify(n.text || "")}</p><button type="button" data-rmnote="${esc(n.id)}" aria-label="노트 지우기">×</button></li>`).join("")}</ul>` : `<p class="st-warn" style="margin:0">뉴스, 실적, 사고판 이유처럼 이 종목에 대한 생각을 날짜별로 남겨 보세요.</p>`}
+    <div class="st-addnote"><textarea id="st-note" rows="2" placeholder="새 노트"></textarea><button type="button" class="btn" data-act="stNoteAdd">추가</button></div>`;
+  const dl = S.divs.filter(d => d.stockId === s.id || (!d.stockId && d.symbol && d.symbol === s.symbol)).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const divs = `<h4 class="st-h4">배당<span class="st-muted">${dl.length ? "누적 " + my(dl.reduce((a, d) => a + (divKRW(d) || 0), 0), "KRW") : ""}</span></h4>
+    ${dl.length ? `<div class="st-list">${dl.slice(0, 6).map(d => `<button type="button" class="st-row st-row-tight" data-div="${esc(d.id)}"><span class="st-main"><b>${String(d.date).replace(/-/g, ".")}</b>${d.memo ? `<small>${esc(d.memo)}</small>` : ""}</span><span class="st-right"><b>${num(divKRW(d)) ? my(divKRW(d), "KRW") : my(d.amount, d.currency)}</b>${d.currency === "USD" ? `<small class="flat">${my(d.amount, "USD")}</small>` : ""}</span></button>`).join("")}</div>` : `<p class="st-warn" style="margin:0">받은 배당이 아직 없어요. 아래 ‘배당 기록’으로 남길 수 있어요.</p>`}`;
+  return { price, pos, target, notes, divs };
+}
+function renderStockDetail(){
+  const s = S.stocks.find(x => x.id === OV.id); if(!s){ closeOv(); return; }
+  const parts = stockParts(s);
+  const key = s.symbol + "|" + OV.range;
+  showOv(`<div class="sheetbox st-sheet" role="dialog" aria-modal="true" aria-label="${esc(s.name)}">
+    <div class="sb-head"><span class="ttl">${esc(codeOf(s.symbol))} · ${exchLabel(s)}</span>
+      <div class="sp"><button class="btn small" type="button" data-act="stEdit">편집</button><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
+    <div class="sb-body">
+      <div class="st-dhead">${avaHtml(s, "lg")}<div style="min-width:0"><h2 class="st-dname">${esc(s.name)}</h2><div class="st-dsym">${esc(s.symbol)}${s.watch ? " · 관심" : ""}</div></div></div>
+      <div id="stp-price">${parts.price}</div>
+      <div class="st-chartbox">
+        <div class="st-chart" id="stChart">${chartHtml(S.hist[key], s)}</div>
+        <div class="seg st-ranges" role="group" aria-label="기간">${RANGES.map(([r, l]) => `<button type="button" data-strange="${r}" aria-pressed="${OV.range === r}">${l}</button>`).join("")}</div>
+      </div>
+      <div id="stp-pos">${parts.pos}</div>
+      <div id="stp-target">${parts.target}</div>
+      ${s.memo ? `<div class="dt-body st-memo">${linkify(s.memo)}</div>` : ""}
+      <div id="stp-notes">${parts.notes}</div>
+      <div id="stp-divs">${parts.divs}</div>
+    </div>
+    <div class="sb-foot st-actions" id="stFoot">${stockFootHtml(s)}</div>
+  </div>`);
+  bindChart();
+}
+const HEART = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-7.5-4.6-9.3-9.1C1.4 8 3.6 4.5 7.1 4.5c2 0 3.6 1.1 4.9 2.9 1.3-1.8 2.9-2.9 4.9-2.9 3.5 0 5.7 3.5 4.4 6.9-1.8 4.5-9.3 9.1-9.3 9.1z"/></svg>`;
+function stockFootHtml(s){
+  if(OV.confirm === "unwatch") return `<div class="confirm">보유 수량이 없어서 관심에서 빼면 목록에서 지워져요. 노트도 함께 지워져요. <button class="btn small danger" type="button" data-act="stDelYes">빼기</button><button class="btn small" type="button" data-act="stDelNo">취소</button></div>`;
+  return `<button type="button" class="st-heart" data-act="stWatch" aria-pressed="${!!s.watch}" aria-label="${s.watch ? "관심 종목에서 빼기" : "관심 종목에 추가"}">${HEART}</button>
+    <button class="btn" type="button" data-act="divAdd" data-for="${esc(s.id)}">배당 기록</button>
+    <button class="btn primary" type="button" data-act="stEdit">${s.qty > 0 ? "수량·단가 수정" : "보유 수량 입력"}</button>`;
+}
+function toggleWatch(){
+  const s = S.stocks.find(x => x.id === OV.id); if(!s) return;
+  if(s.watch && !(+s.qty > 0)){ setStockConfirm("unwatch"); return; }
+  putStock({ ...s, watch:!s.watch, updatedAt:Date.now() });
+  setStockConfirm(false); updateStockDetail();
+  const head = document.querySelector(".st-dsym"); if(head) head.textContent = s.symbol + (!s.watch ? " · 관심" : "");
+  toast(!s.watch ? "관심 종목에 추가했어요." : "관심 종목에서 뺐어요.");
+}
+
+function setStockConfirm(v){
+  OV.confirm = v;
+  const s = S.stocks.find(x => x.id === OV.id), f = $("#stFoot");
+  if(s && f) f.innerHTML = stockFootHtml(s);
+}
+function setRange(r){
+  OV.range = r;
+  const s = S.stocks.find(x => x.id === OV.id); if(!s) return;
+  document.querySelectorAll("[data-strange]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.strange === r)));
+  const el = $("#stChart"); if(el){ el.innerHTML = chartHtml(S.hist[s.symbol + "|" + r], s); bindChart(); }
+  loadHistory();
+}
+function updateStockDetail(){
+  if(!OV || OV.kind !== "stock") return;
+  const s = S.stocks.find(x => x.id === OV.id); if(!s){ closeOv(); return; }
+  const parts = stockParts(s);
+  const draft = ($("#st-note") || {}).value || "";
+  for(const [key, html] of Object.entries(parts)){ const el = document.getElementById("stp-" + key); if(el) el.innerHTML = html; }
+  const ta = $("#st-note"); if(ta && draft) ta.value = draft;
+}
+async function loadHistory(){
+  if(!OV || OV.kind !== "stock") return;
+  const s = S.stocks.find(x => x.id === OV.id); if(!s) return;
+  const key = s.symbol + "|" + OV.range, h = S.hist[key];
+  if(h && !h.err && Date.now() - h.at < (OV.range === "1d" || OV.range === "5d" ? 60e3 : 10 * 60e3)) return;
+  try{
+    if(!navigator.onLine) throw new TypeError("Failed to fetch");
+    const d = await S.B.invoke({ action:"history", symbol:s.symbol, range:OV.range });
+    S.hist[key] = { at:Date.now(), points:d.points || [], prevClose:d.prevClose ?? null };
+  }catch(e){
+    S.hist[key] = { at:Date.now(), err: isNetErr(e) ? "인터넷에 연결되면 차트를 볼 수 있어요." : "차트를 불러오지 못했어요." };
+  }
+  if(OV && OV.kind === "stock" && OV.id === s.id && s.symbol + "|" + OV.range === key){
+    const el = $("#stChart"); if(el){ el.innerHTML = chartHtml(S.hist[key], s); bindChart(); }
+  }
+}
+function chartHtml(h, s){
+  CH = null;
+  if(!h) return `<div class="st-chart-msg">차트를 불러오는 중…</div>`;
+  if(h.err) return `<div class="st-chart-msg">${esc(h.err)}</div>`;
+  const pts = h.points || [];
+  if(pts.length < 2) return `<div class="st-chart-msg">차트 데이터가 없어요.</div>`;
+  const vw = window.innerWidth || 600, narrow = vw <= 560;
+  const W = Math.max(280, Math.round(Math.min(680, vw - (narrow ? 16 : 32)) - (narrow ? 34 : 46)));
+  const H = narrow ? 200 : 220, T = 26, B = 26, L = 6, R = 6, cur = s.currency;
+  const range = OV.range, intraday = range === "1d" || range === "5d";
+  const vals = pts.map(p => p[1]);
+  const base = range === "1d" && num(h.prevClose) ? h.prevClose : vals[0];
+  let mn = Math.min(...vals, base), mx = Math.max(...vals, base);
+  if(mn === mx){ mn *= 0.99; mx *= 1.01; }
+  const X = i => L + i * (W - L - R) / (pts.length - 1);
+  const Y = v => T + (mx - v) / (mx - mn) * (H - T - B);
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join("");
+  const first = base, last = vals[vals.length - 1], up = last >= first, col = up ? "var(--up)" : "var(--down)";
+  const imx = vals.indexOf(Math.max(...vals)), imn = vals.indexOf(Math.min(...vals));
+  const fd = t => { const x = new Date(t); return range === "1d" ? `${pad(x.getHours())}:${pad(x.getMinutes())}` : range === "5d" ? `${x.getMonth() + 1}/${x.getDate()} ${pad(x.getHours())}:${pad(x.getMinutes())}` : `${x.getFullYear()}.${pad(x.getMonth() + 1)}.${pad(x.getDate())}`; };
+  const lab = (i, txt, below) => {
+    const x = X(i), y = Y(vals[i]);
+    const anchor = x < 80 ? "start" : x > W - 80 ? "end" : "middle";
+    const ty = below ? Math.min(y + 16, H - B - 4) : Math.max(y - 8, 12);
+    return `<text x="${x.toFixed(1)}" y="${ty.toFixed(1)}" text-anchor="${anchor}" font-size="11.5" fill="var(--ink-2)">${txt}</text>`;
+  };
+  const rl = { "1d":"1일", "5d":"1주", "1mo":"1달", "3mo":"3달", "1y":"1년", "5y":"5년" }[range] || "";
+  CH = { pts, X, Y, W, H, T, B, L, R, cur, fd };
+  return `${range === "1d"
+      ? `<div class="st-period"><span class="st-muted">점선은 어제 종가 ${fmtMoney(base, cur)}</span></div>`
+      : `<div class="st-period ${up ? "up" : "down"}"><span class="st-muted">${rl} 전보다</span> ${fmtMoney(last - first, cur, true)} (${fmtPct((last - first) / first * 100)})</div>`}
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(s.name)} ${rl} 주가">
+      <defs><linearGradient id="stGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".18"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+      <line x1="${L}" x2="${W - R}" y1="${Y(first).toFixed(1)}" y2="${Y(first).toFixed(1)}" stroke="var(--line-2)" stroke-dasharray="3 4"/>
+      <path d="${d}L${X(pts.length - 1).toFixed(1)} ${H - B}L${X(0).toFixed(1)} ${H - B}Z" fill="url(#stGrad)"/>
+      <path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${lab(imx, "최고 " + fmtMoney(vals[imx], cur), false)}${imn !== imx ? lab(imn, "최저 " + fmtMoney(vals[imn], cur), true) : ""}
+      <text x="${L}" y="${H - 6}" font-size="11" fill="var(--ink-3)">${fd(pts[0][0])}</text>
+      <text x="${W - R}" y="${H - 6}" text-anchor="end" font-size="11" fill="var(--ink-3)">${fd(pts[pts.length - 1][0])}</text>
+      <g class="st-cross" visibility="hidden"><line y1="${T - 8}" y2="${H - B}" stroke="var(--ink-3)" stroke-width="1"/><circle r="5" fill="${col}" stroke="var(--surface)" stroke-width="2"/></g>
+      <rect class="st-hit" x="0" y="0" width="${W}" height="${H}" fill="transparent"/>
+    </svg><div class="st-tip" hidden></div>`;
+}
+function bindChart(){
+  const box = $("#stChart"); if(!box || !CH) return;
+  const svg = box.querySelector("svg"), tip = box.querySelector(".st-tip"), g = svg && svg.querySelector(".st-cross");
+  if(!svg || !g) return;
+  const geo = CH;
+  const move = ev => {
+    const r = svg.getBoundingClientRect();
+    const x = (ev.clientX - r.left) / r.width * geo.W;
+    let i = Math.round((x - geo.L) / (geo.W - geo.L - geo.R) * (geo.pts.length - 1));
+    i = Math.max(0, Math.min(geo.pts.length - 1, i));
+    const px = geo.X(i), py = geo.Y(geo.pts[i][1]);
+    g.setAttribute("visibility", "visible");
+    const ln = g.querySelector("line"); ln.setAttribute("x1", px); ln.setAttribute("x2", px);
+    const c = g.querySelector("circle"); c.setAttribute("cx", px); c.setAttribute("cy", py);
+    tip.textContent = `${geo.fd(geo.pts[i][0])} · ${fmtMoney(geo.pts[i][1], geo.cur)}`; tip.hidden = false;
+    const br = box.getBoundingClientRect(), half = tip.offsetWidth / 2;
+    const left = r.left - br.left + px / geo.W * r.width;
+    tip.style.left = Math.max(half, Math.min(br.width - half, left)) + "px";
+    tip.style.top = (r.top - br.top + geo.T / geo.H * r.height) + "px";
+  };
+  svg.addEventListener("pointermove", move);
+  svg.addEventListener("pointerdown", move);
+  svg.addEventListener("pointerleave", () => { g.setAttribute("visibility", "hidden"); tip.hidden = true; });
+}
+function putStock(rec){
+  const i = S.stocks.findIndex(x => x.id === rec.id);
+  if(i >= 0) S.stocks[i] = rec; else S.stocks.push(rec);
+  saveStocks(); enqueue({ op:"row", table:"stocks", rec });
+}
+function putDiv(rec){
+  const i = S.divs.findIndex(x => x.id === rec.id);
+  if(i >= 0) S.divs[i] = rec; else S.divs.push(rec);
+  saveDivs(); enqueue({ op:"row", table:"dividends", rec });
+}
+function addNote(){
+  const s = S.stocks.find(x => x.id === OV.id); const ta = $("#st-note");
+  const text = (ta && ta.value || "").trim(); if(!s || !text) return;
+  const rec = { ...s, notes:[{ id:uuid(), date:today(), text }, ...(s.notes || [])], updatedAt:Date.now() };
+  ta.value = ""; putStock(rec); updateStockDetail(); toast("노트를 남겼어요.");
+}
+function removeNote(nid){
+  const s = S.stocks.find(x => x.id === OV.id); if(!s) return;
+  putStock({ ...s, notes:(s.notes || []).filter(n => n.id !== nid), updatedAt:Date.now() }); updateStockDetail();
+}
+function deleteStock(){
+  const s = S.stocks.find(x => x.id === OV.id); if(!s) return;
+  S.stocks = S.stocks.filter(x => x.id !== s.id); saveStocks();
+  let touched = false;
+  S.divs = S.divs.map(d => d.stockId === s.id ? (touched = true, { ...d, stockId:null, symbol:d.symbol || s.symbol, name:d.name || s.name }) : d);
+  if(touched) saveDivs();
+  closeOv(); render(); toast(`${s.name}을(를) 지웠어요.`);
+  enqueue({ op:"rowdel", table:"stocks", id:s.id });
+}
+
+/* ---------- stocks: search & form ---------- */
+function openStockSearch(){
+  if(OV) endOvKeepHistory();
+  OV = { kind:"stsearch", q:"", results:null, loading:false, err:"" };
+  showOv(`<div class="sheetbox" role="dialog" aria-modal="true" aria-label="종목 추가">
+    <div class="sb-head"><span class="ttl">종목 추가</span><div class="sp"><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
+    <div class="sb-body">
+      <div class="search st-search"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="st-q" type="search" placeholder="종목 이름, 코드, 티커" autocomplete="off" enterkeyhint="search"></div>
+      <div id="stResults" class="st-results">${searchResultsHtml()}</div>
+    </div></div>`);
+  setTimeout(() => { const i = $("#st-q"); if(i) i.focus(); }, 40);
+}
+function searchResultsHtml(){
+  const o = OV;
+  if(!o.q.trim()) return `<p class="st-hint">한국 주식은 <b>한글 이름</b>이나 <b>6자리 코드</b>, 미국 주식은 <b>영문 이름</b>이나 <b>티커</b>로 찾아요.<br>예: 삼성전자 · 005930 · Apple · AAPL · QQQ</p>`;
+  if(o.loading && !o.results) return `<p class="st-hint">찾는 중…</p>`;
+  if(o.err) return `<p class="st-hint">${esc(o.err)}</p>`;
+  if(!o.results || !o.results.length) return `<p class="st-hint">‘${esc(o.q)}’ 검색 결과가 없어요. 미국 주식은 영문으로 검색해 보세요.</p>`;
+  return `<div class="st-list">${o.results.map((r, i) => {
+    const have = S.stocks.find(s => s.symbol === r.symbol);
+    return `<button type="button" class="st-row" data-stpick="${i}">${avaHtml(r)}
+      <span class="st-main"><b>${esc(r.name)}</b><small>${esc(codeOf(r.symbol))} · ${esc(r.exchange || (r.market === "KR" ? "한국" : "미국"))}${r.type === "ETF" ? " · ETF" : ""}</small></span>
+      <span class="st-right">${have ? `<small class="st-have">${have.qty > 0 ? "보유 중" : "관심 종목"}</small>` : `<small class="st-addtxt">추가</small>`}</span></button>`;
+  }).join("")}</div>`;
+}
+let searchT = 0;
+function onStockSearchInput(v){
+  OV.q = v; clearTimeout(searchT);
+  if(!v.trim()){ OV.results = null; OV.err = ""; $("#stResults").innerHTML = searchResultsHtml(); return; }
+  searchT = setTimeout(async () => {
+    const q = v.trim();
+    OV.loading = true; OV.err = "";
+    if(!OV.results) $("#stResults").innerHTML = searchResultsHtml();
+    try{
+      if(!navigator.onLine) throw new TypeError("Failed to fetch");
+      const d = await S.B.invoke({ action:"search", q });
+      if(!OV || OV.kind !== "stsearch" || OV.q.trim() !== q) return;
+      OV.results = d.results || [];
+    }catch(e){
+      if(!OV || OV.kind !== "stsearch") return;
+      OV.err = isNetErr(e) ? "인터넷에 연결되면 검색할 수 있어요." : errMsg(e); OV.results = null;
+    }
+    OV.loading = false;
+    const el = $("#stResults"); if(el) el.innerHTML = searchResultsHtml();
+  }, 280);
+}
+function openStockForm(base, id){
+  const s = id ? S.stocks.find(x => x.id === id) : null;
+  const src = s || base;
+  if(OV) endOvKeepHistory();
+  OV = { kind:"stform", id:s ? s.id : null, err:"", d:{
+    symbol:src.symbol, market:src.market, currency:src.currency || (src.market === "US" ? "USD" : "KRW"), name:src.name,
+    watch: s ? s.watch : true, qty: s && s.qty ? String(s.qty) : "", avgPrice: s && s.avgPrice ? String(s.avgPrice) : "",
+    target: s && num(s.target) ? String(s.target) : "", memo: s ? s.memo : "" } };
+  renderStockForm();
+  if(!quoteOf(OV.d)) refreshQuotes(true, [OV.d.symbol]);
+}
+function stfPriceHtml(){
+  const d = OV && OV.d; if(!d) return "";
+  const q = S.quotes[d.symbol];
+  return q ? `현재가 <b>${fmtMoney(q.price, d.currency)}</b> <span class="${tone(q.changePct)}">${fmtPct(q.changePct)}</span>` : (navigator.onLine ? "현재가 불러오는 중…" : "오프라인이라 현재가를 못 불러왔어요.");
+}
+function syncStForm(){
+  if(!OV || OV.kind !== "stform" || !$("#stf-name")) return;
+  const d = OV.d, v = id => ($(id) || {}).value || "";
+  d.name = v("#stf-name"); d.qty = v("#stf-qty"); d.avgPrice = v("#stf-avg"); d.target = v("#stf-target"); d.memo = v("#stf-memo");
+  d.watch = !!($("#stf-watch") || {}).checked;
+}
+function renderStockForm(){
+  const d = OV.d, unit = d.currency === "USD" ? "달러" : "원";
+  showOv(`<form class="sheetbox" id="stForm" role="dialog" aria-modal="true" aria-label="${OV.id ? "종목 편집" : "종목 추가"}" novalidate>
+    <div class="sb-head"><span class="ttl">${OV.id ? "종목 편집" : "종목 추가"}</span><div class="sp"><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
+    <div class="sb-body">
+      <div class="st-dhead">${avaHtml(d, "lg")}<div style="min-width:0"><div class="st-dsym">${esc(codeOf(d.symbol))} · ${esc(exchLabel(d))} · ${d.currency === "USD" ? "달러" : "원화"}</div><p class="st-note" id="stfPrice" style="margin:2px 0 0">${stfPriceHtml()}</p></div></div>
+      ${!OV.id ? `<button type="button" class="btn small ghost" data-act="stAdd" style="align-self:flex-start;margin-top:-8px">다른 종목 고르기</button>` : ""}
+      <div class="fld"><label for="stf-name">이름</label><input id="stf-name" type="text" value="${esc(d.name)}" maxlength="60"></div>
+      <label class="st-toggle" for="stf-watch"><span><b>관심 종목에 표시</b><small>관심 탭에서 현재가와 등락을 볼 수 있어요.</small></span><input id="stf-watch" type="checkbox" ${d.watch ? "checked" : ""}></label>
+      <div class="frow">
+        <div class="fld"><label for="stf-qty">보유 수량 (주)</label><input id="stf-qty" type="text" inputmode="decimal" value="${esc(d.qty)}" placeholder="없으면 비워 두세요"></div>
+        <div class="fld"><label for="stf-avg">평균 단가 (${unit})</label><input id="stf-avg" type="text" inputmode="decimal" value="${esc(d.avgPrice)}" placeholder="${d.currency === "USD" ? "예: 182.50" : "예: 61000"}"></div>
+      </div>
+      <div class="fld"><label for="stf-target">목표가 (${unit}, 선택)</label><input id="stf-target" type="text" inputmode="decimal" value="${esc(d.target)}"></div>
+      <div class="fld"><label for="stf-memo">메모 (선택)</label><textarea id="stf-memo" rows="3" placeholder="이 종목을 보는 이유, 매수 계획 같은 것">${esc(d.memo)}</textarea></div>
+      ${OV.err ? `<p class="err" style="margin:0;color:var(--danger);font-size:13px">${esc(OV.err)}</p>` : ""}
+    </div>
+    <div class="sb-foot">${OV.confirm
+      ? `<div class="confirm">${esc(d.name)}을(를) 지울까요? 노트도 함께 지워져요. 배당 기록은 남아요. <button class="btn small danger" type="button" data-act="stDelYes">삭제</button><button class="btn small" type="button" data-act="stDelNo">취소</button></div>`
+      : `${OV.id ? `<button class="btn small ghost danger" type="button" data-act="stDel">종목 삭제</button>` : ""}<span class="hint">평균 단가는 증권사 앱의 ‘평균 단가’를 그대로 적으면 돼요.</span><button class="btn" type="button" data-act="close">취소</button><button class="btn primary" type="submit">저장</button>`}</div>
+  </form>`);
+}
+function saveStockForm(){
+  syncStForm();
+  const d = OV.d;
+  const qty = d.qty.trim() ? parseNum(d.qty) : 0, avg = d.avgPrice.trim() ? parseNum(d.avgPrice) : 0;
+  const target = d.target.trim() ? parseNum(d.target) : null;
+  const fail = m => { OV.err = m; renderStockForm(); };
+  if(!d.name.trim()) return fail("이름을 적어 주세요.");
+  if(qty == null || qty < 0) return fail("보유 수량은 0 이상의 숫자로 적어 주세요.");
+  if(avg == null || avg < 0) return fail("평균 단가는 숫자로 적어 주세요.");
+  if(qty > 0 && !avg) return fail("보유 수량이 있으면 평균 단가도 적어 주세요.");
+  if(d.target.trim() && (target == null || target <= 0)) return fail("목표가는 숫자로 적어 주세요.");
+  if(!d.watch && !qty) return fail("관심 종목에 표시하거나 보유 수량을 적어 주세요.");
+  const old = OV.id ? S.stocks.find(x => x.id === OV.id) : null;
+  const now = Date.now();
+  const rec = { id:old ? old.id : uuid(), symbol:d.symbol, market:d.market, name:d.name.trim(), currency:d.currency, watch:d.watch,
+    qty, avgPrice:qty ? avg : (avg || 0), target, memo:d.memo.trim(), notes:old ? old.notes || [] : [],
+    sort:old ? old.sort : Math.max(0, ...S.stocks.map(s => s.sort || 0)) + 1, createdAt:old ? old.createdAt : now, updatedAt:now };
+  putStock(rec);
+  if(!old) S.stockTab = qty > 0 ? "hold" : "watch";
+  render();
+  OV.saved = true; endOvKeepHistory();
+  OV = { kind:"stock", id:rec.id, range:"1d", confirm:false };
+  renderStockDetail(); loadHistory();
+  toast(old ? "저장했어요." : `${rec.name}을(를) 추가했어요.`);
+}
+
+/* ---------- stocks: dividend form ---------- */
+function openDivForm(id, forStockId){
+  const d0 = id ? S.divs.find(x => x.id === id) : null;
+  const s0 = forStockId ? S.stocks.find(x => x.id === forStockId)
+    : (S.stocks.filter(x => +x.qty > 0).sort((a, b) => (position(b).valueKRW || 0) - (position(a).valueKRW || 0))[0] || S.stocks[0] || null);
+  if(OV) endOvKeepHistory();
+  OV = { kind:"divform", id:d0 ? d0.id : null, confirm:false, err:"", d: d0
+    ? { ...d0, amount:String(d0.amount), krw:num(d0.krw) ? String(d0.krw) : "" }
+    : { stockId:s0 ? s0.id : "", symbol:s0 ? s0.symbol : "", name:s0 ? s0.name : "", date:today(), amount:"", currency:s0 ? s0.currency : "KRW", krw:"", memo:"" } };
+  renderDivForm();
+  if(OV.d.currency === "USD" && !fxRate()) refreshQuotes(true, []);
+}
+function dvKrwHint(){
+  const d = OV && OV.d; if(!d) return "";
+  const a = parseNum(d.amount);
+  return fxRate() ? `비워 두면 지금 환율(${fxRate().toLocaleString("ko-KR", { maximumFractionDigits:2 })}원)로 계산해요${num(a) ? ` · 약 ${fmtMoney(a * fxRate(), "KRW")}` : ""}.` : "환율을 불러오지 못했어요. 원화 금액을 직접 적어 주세요.";
+}
+function syncDivForm(){
+  if(!OV || OV.kind !== "divform" || !$("#dv-date")) return;
+  const d = OV.d, v = id => ($(id) || {}).value || "";
+  d.stockId = v("#dv-stock"); d.date = v("#dv-date") || today(); d.amount = v("#dv-amt"); d.memo = v("#dv-memo");
+  if($("#dv-krw")) d.krw = v("#dv-krw");
+  if(!d.stockId && $("#dv-name")) d.name = v("#dv-name");
+  if(d.stockId){ const s = S.stocks.find(x => x.id === d.stockId); if(s){ d.symbol = s.symbol; d.name = s.name; } }
+}
+function renderDivForm(){
+  const d = OV.d;
+  showOv(`<form class="sheetbox" id="divForm" role="dialog" aria-modal="true" aria-label="배당 기록" novalidate>
+    <div class="sb-head"><span class="ttl">${OV.id ? "배당 기록 편집" : "배당 기록"}</span><div class="sp"><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
+    <div class="sb-body">
+      <div class="fld"><label for="dv-stock">종목</label>
+        <select id="dv-stock"><option value="">직접 입력</option>${S.stocks.map(s => `<option value="${esc(s.id)}" ${d.stockId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></div>
+      ${!d.stockId ? `<div class="fld"><label for="dv-name">종목 이름</label><input id="dv-name" type="text" value="${esc(d.name)}" maxlength="60"></div>` : ""}
+      <div class="frow">
+        <div class="fld"><label for="dv-date">받은 날</label><input id="dv-date" type="date" value="${esc(d.date)}"></div>
+        <div class="fld"><span class="lb">통화</span><div class="seg" role="group" aria-label="통화"><button type="button" data-dvcur="KRW" aria-pressed="${d.currency !== "USD"}">원</button><button type="button" data-dvcur="USD" aria-pressed="${d.currency === "USD"}">달러</button></div></div>
+      </div>
+      <div class="fld"><label for="dv-amt">받은 금액 (${d.currency === "USD" ? "달러" : "원"})</label><input id="dv-amt" type="text" inputmode="decimal" value="${esc(d.amount)}" placeholder="${d.currency === "USD" ? "예: 12.34" : "예: 36100"}"></div>
+      ${d.currency === "USD" ? `<div class="fld"><label for="dv-krw">원화 금액 (선택)</label><input id="dv-krw" type="text" inputmode="decimal" value="${esc(d.krw)}"><p class="st-note" id="dvKrwHint" style="margin:0">${dvKrwHint()}</p></div>` : ""}
+      <div class="fld"><label for="dv-memo">메모 (선택)</label><input id="dv-memo" type="text" value="${esc(d.memo)}" maxlength="100" placeholder="예: 분기 배당, 세후"></div>
+      ${OV.err ? `<p style="margin:0;color:var(--danger);font-size:13px">${esc(OV.err)}</p>` : ""}
+    </div>
+    <div class="sb-foot">${OV.confirm
+      ? `<div class="confirm">이 배당 기록을 지울까요? <button class="btn small danger" type="button" data-act="divDelYes">삭제</button><button class="btn small" type="button" data-act="divDelNo">취소</button></div>`
+      : `${OV.id ? `<button class="btn small ghost danger" type="button" data-act="divDel">삭제</button>` : ""}<span class="hint">세금을 뗀 실제 입금액을 적으면 편해요.</span><button class="btn" type="button" data-act="close">취소</button><button class="btn primary" type="submit">저장</button>`}</div>
+  </form>`);
+}
+function saveDivForm(){
+  syncDivForm();
+  const d = OV.d, amount = parseNum(d.amount);
+  const fail = m => { OV.err = m; renderDivForm(); };
+  if(!d.stockId && !String(d.name || "").trim()) return fail("종목을 고르거나 이름을 적어 주세요.");
+  if(amount == null || amount <= 0) return fail("받은 금액을 숫자로 적어 주세요.");
+  let krw = null;
+  if(d.currency === "USD"){
+    krw = String(d.krw || "").trim() ? parseNum(d.krw) : (fxRate() ? Math.round(amount * fxRate()) : null);
+    if(String(d.krw || "").trim() && krw == null) return fail("원화 금액은 숫자로 적어 주세요.");
+  }
+  const old = OV.id ? S.divs.find(x => x.id === OV.id) : null, now = Date.now();
+  const rec = { id:old ? old.id : uuid(), stockId:d.stockId || null, symbol:d.symbol || "", name:String(d.name || "").trim(), date:d.date || today(),
+    amount, currency:d.currency, krw, memo:String(d.memo || "").trim(), createdAt:old ? old.createdAt : now, updatedAt:now };
+  putDiv(rec);
+  S.divYear = +rec.date.slice(0, 4) || S.divYear;
+  closeOv(); render(); toast(old ? "배당 기록을 고쳤어요." : "배당을 기록했어요.");
+}
+function deleteDiv(){
+  const id = OV.id; S.divs = S.divs.filter(x => x.id !== id); saveDivs();
+  closeOv(); render(); toast("배당 기록을 지웠어요.");
+  enqueue({ op:"rowdel", table:"dividends", id });
 }
 
 /* ---------- overlays (with Android back-button support) ---------- */
@@ -843,6 +1580,7 @@ async function signOut(){
 }
 function resetState(){
   S.uid = null; S.email = ""; S.entries = []; S.loaded = false; S.outbox = []; S.lastSync = 0; S.urls = new Map(); S.syncErr = ""; S.sync = "idle"; S.cats = DEFAULT_CATS.slice();
+  S.stocks = []; S.divs = []; S.quotes = {}; S.fx = null; S.quotesAt = 0; S.qErr = ""; S.qLoading = false; S.hist = {};
 }
 function onSignedOut(){
   if(!S.uid) return;
@@ -866,7 +1604,7 @@ syncThemeColor();
 
 /* backup */
 function exportJson(){
-  const data = JSON.stringify({ app:"sansiya", version:APP_VERSION, exportedAt:new Date().toISOString(), categories:S.cats, entries:S.entries }, null, 2);
+  const data = JSON.stringify({ app:"sansiya", version:APP_VERSION, exportedAt:new Date().toISOString(), categories:S.cats, entries:S.entries, stocks:S.stocks, dividends:S.divs }, null, 2);
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([data], { type:"application/json" }));
   a.download = `산시야-백업-${today()}.json`;
@@ -884,7 +1622,7 @@ function normEntry(r){
 }
 function parseImport(text){
   const j = JSON.parse(text);
-  const src = Array.isArray(j) ? j : (Array.isArray(j.entries) ? j.entries : null);
+  const src = Array.isArray(j) ? j : (Array.isArray(j.entries) ? j.entries : (Array.isArray(j.stocks) || Array.isArray(j.dividends) ? [] : null));
   if(!src) throw new Error("format");
   const cats = Array.isArray(j.categories) ? j.categories.filter(c => c && c.code && c.name).map(c => ({ code:String(c.code).slice(0, 4).toUpperCase(), name:String(c.name).slice(0, 20) })) : [];
   const existing = new Set(S.entries.map(e => e.id));
@@ -904,7 +1642,26 @@ function parseImport(text){
     if(!e.seq || u.has(e.seq)) e.seq = Math.max(0, ...u) + 1;
     u.add(e.seq);
   });
-  return { entries:out, cats, dropped, overwrite:out.filter(e => existing.has(e.id)).length };
+  // stocks & dividends (merged by symbol so the same stock is never added twice)
+  const idMap = new Map(), stocks = [], divs = [];
+  for(const r of (Array.isArray(j.stocks) ? j.stocks : [])){
+    if(!r || !r.symbol || !r.name) continue;
+    const have = S.stocks.find(x => x.symbol === r.symbol);
+    const id = have ? have.id : (isUuid(r.id) ? r.id : uuid());
+    if(r.id) idMap.set(r.id, id);
+    const now = Date.now();
+    stocks.push({ id, symbol:String(r.symbol), market:r.market === "US" ? "US" : "KR", name:String(r.name).slice(0, 60), currency:r.currency === "USD" ? "USD" : "KRW",
+      watch:r.watch !== false, qty:Math.max(0, +r.qty || 0), avgPrice:Math.max(0, +r.avgPrice || 0), target:numOrNull(r.target), memo:String(r.memo || ""),
+      notes:Array.isArray(r.notes) ? r.notes.filter(n => n && n.text).map(n => ({ id:String(n.id || uuid()), date:String(n.date || today()), text:String(n.text) })) : [],
+      sort:+r.sort || 0, createdAt:+r.createdAt || now, updatedAt:+r.updatedAt || now });
+  }
+  for(const r of (Array.isArray(j.dividends) ? j.dividends : [])){
+    if(!r || !(+r.amount > 0)) continue;
+    const now = Date.now(), sid = r.stockId ? (idMap.get(r.stockId) || (S.stocks.some(x => x.id === r.stockId) ? r.stockId : null)) : null;
+    divs.push({ id:isUuid(r.id) ? r.id : uuid(), stockId:sid, symbol:String(r.symbol || ""), name:String(r.name || ""), date:/^\d{4}-\d{2}-\d{2}$/.test(r.date || "") ? r.date : today(),
+      amount:+r.amount, currency:r.currency === "USD" ? "USD" : "KRW", krw:numOrNull(r.krw), memo:String(r.memo || ""), createdAt:+r.createdAt || now, updatedAt:+r.updatedAt || now });
+  }
+  return { entries:out, cats, dropped, overwrite:out.filter(e => existing.has(e.id)).length, stocks, divs };
 }
 function openImport(res){ if(OV) endOvKeepHistory(); OV = { kind:"import", res }; renderImport(); }
 function renderImport(){
@@ -912,7 +1669,7 @@ function renderImport(){
   showOv(`<div class="sheetbox" role="dialog" aria-modal="true" aria-label="가져오기">
     <div class="sb-head"><span class="ttl">백업 가져오기</span><div class="sp"><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
     <div class="sb-body prose">
-      <p style="margin:0;font-size:15px">기록 <b>${r.entries.length}건</b>을 가져올까요?</p>
+      <p style="margin:0;font-size:15px">${[r.entries.length ? `기록 <b>${r.entries.length}건</b>` : "", r.stocks.length ? `종목 <b>${r.stocks.length}개</b>` : "", r.divs.length ? `배당 <b>${r.divs.length}건</b>` : ""].filter(Boolean).join(", ")}을 가져올까요?</p>
       <p class="tag" style="margin:0">${r.overwrite ? `같은 기록 ${r.overwrite}건은 백업 내용으로 덮어써요. ` : ""}${r.dropped ? `사진 ${r.dropped}장은 옮길 수 없어서 빠져요. ` : ""}${r.entries.some(e => e.example) ? "예시 기록도 들어 있어요. 가져온 뒤 배너에서 한 번에 지울 수 있어요." : ""}</p>
     </div>
     <div class="sb-foot"><button class="btn" type="button" data-act="close">취소</button><button class="btn primary" type="button" data-act="importYes">가져오기</button></div></div>`);
@@ -929,7 +1686,14 @@ async function doImport(){
     const cats = [...S.cats.filter(c => c.code !== "ETC"), ...addCats, ...S.cats.filter(c => c.code === "ETC")];
     S.cats = cats; KV.set(k("settings"), { categories:cats }); enqueue({ op:"settings", settings:{ categories:cats } });
   }
-  render(); toast(`기록 ${r.entries.length}건을 가져왔어요.`);
+  if(r.stocks.length || r.divs.length){
+    const sm = new Map(S.stocks.map(x => [x.id, x])); r.stocks.forEach(x => sm.set(x.id, x)); S.stocks = [...sm.values()]; saveStocks();
+    const dm = new Map(S.divs.map(x => [x.id, x])); r.divs.forEach(x => dm.set(x.id, x)); S.divs = [...dm.values()]; saveDivs();
+    for(const x of r.stocks) enqueue({ op:"row", table:"stocks", rec:x });
+    for(const x of r.divs) enqueue({ op:"row", table:"dividends", rec:x });
+  }
+  render(); toast([r.entries.length ? `기록 ${r.entries.length}건` : "", r.stocks.length ? `종목 ${r.stocks.length}개` : "", r.divs.length ? `배당 ${r.divs.length}건` : ""].filter(Boolean).join(", ") + "을 가져왔어요.");
+  if(!r.entries.length) return;
   try{
     setSync("busy"); await S.B.upsertMany(r.entries); S.lastSync = Date.now(); setSync("ok");
   }catch(err){
@@ -1077,7 +1841,17 @@ document.addEventListener("click", ev => {
     else if(ds.gate === "forgot") forgotPassword();
     return;
   }
-  if(ds.view){ S.view = ds.view; render(); window.scrollTo({ top:0 }); return; }
+  if(ds.view){ S.view = ds.view; render(); window.scrollTo({ top:0 }); if(S.view === "stocks") refreshQuotes(); return; }
+  // stocks
+  if(ds.sttab){ S.stockTab = ds.sttab; render(); if(ds.sttab !== "div") refreshQuotes(); return; }
+  if(ds.stock){ openStock(ds.stock); return; }
+  if(ds.div){ openDivForm(ds.div); return; }
+  if(ds.divyear){ S.divYear += +ds.divyear; render(); return; }
+  if(ds.strange){ setRange(ds.strange); return; }
+  if(ds.stpick){ const r = OV && OV.results && OV.results[+ds.stpick]; if(r){ const have = S.stocks.find(s => s.symbol === r.symbol); if(have) openStock(have.id); else openStockForm(r); } return; }
+  if(ds.rmnote){ removeNote(ds.rmnote); return; }
+  if(ds.holdshow){ S.holdShow = ds.holdshow; savePrefs(); render(); return; }
+  if(ds.dvcur){ syncDivForm(); OV.d.currency = ds.dvcur; renderDivForm(); if(ds.dvcur === "USD" && !fxRate()) refreshQuotes(true, []); return; }
   if(ds.type && !t.closest(".sheetbox")){ setFilter("type", ds.type); return; }
   if(ds.cat){ setFilter("cat", ds.cat); return; }
   if(ds.tag){ setFilter("tag", S.filter.tag === ds.tag ? null : ds.tag); return; }
@@ -1102,6 +1876,19 @@ document.addEventListener("click", ev => {
   switch(ds.act){
     case "new": openEditor(null); break;
     case "newOn": openEditor(null, ds.date); break;
+    case "stAdd": openStockSearch(); break;
+    case "stRefresh": refreshQuotes(true); break;
+    case "stEdit": openStockForm(null, OV.id); break;
+    case "stDel": if(OV.kind === "stform"){ syncStForm(); OV.confirm = true; renderStockForm(); } else setStockConfirm(true); break;
+    case "stDelNo": if(OV.kind === "stform"){ syncStForm(); OV.confirm = false; renderStockForm(); } else setStockConfirm(false); break;
+    case "stWatch": toggleWatch(); break;
+    case "stEye": S.hideAmt = !S.hideAmt; savePrefs(); render(); if(OV && OV.kind === "stock") updateStockDetail(); break;
+    case "stDelYes": deleteStock(); break;
+    case "stNoteAdd": addNote(); break;
+    case "divAdd": openDivForm(null, ds.for); break;
+    case "divDel": syncDivForm(); OV.confirm = true; renderDivForm(); break;
+    case "divDelNo": OV.confirm = false; renderDivForm(); break;
+    case "divDelYes": deleteDiv(); break;
     case "close": closeOv(); break;
     case "edit": openEditor(OV.id); break;
     case "del": OV.confirm = true; renderDetail(); break;
@@ -1155,13 +1942,20 @@ document.addEventListener("change", ev => {
   const t = ev.target;
   if(t.dataset && t.dataset.showpw){ t.dataset.showpw.split(",").forEach(id => { const i = document.getElementById(id); if(i) i.type = t.checked ? "text" : "password"; }); return; }
   if(t.id === "sortSel"){ S.sort = t.value; savePrefs(); render(); }
+  if(t.id === "holdSort"){ S.holdSort = t.value; savePrefs(); render(); }
+  if(t.id === "dv-stock" && OV && OV.kind === "divform"){
+    syncDivForm(); const s = S.stocks.find(x => x.id === OV.d.stockId);
+    if(s) OV.d.currency = s.currency; else { OV.d.symbol = ""; }
+    renderDivForm();
+    if(OV.d.currency === "USD" && !fxRate()) refreshQuotes(true, []);
+  }
   if(t.id === "f-photo" && t.files.length){ uploadPhotos(t.files); }
   if(t.id === "f-cat" && OV){ OV.draft.cat = t.value; }
   if(t.id === "importFile" && t.files.length){
     const f = t.files[0];
     f.text().then(txt => {
       let res; try{ res = parseImport(txt); }catch(e){ toast("산시야 백업 파일(JSON)이 아니에요."); return; }
-      if(!res.entries.length){ toast("가져올 기록이 없어요."); return; }
+      if(!res.entries.length && !res.stocks.length && !res.divs.length){ toast("가져올 기록이 없어요."); return; }
       openImport(res);
     });
   }
@@ -1169,6 +1963,8 @@ document.addEventListener("change", ev => {
 document.addEventListener("submit", ev => {
   ev.preventDefault();
   if(ev.target.id === "edForm"){ if(!OV.busy) saveDraft(); }
+  else if(ev.target.id === "stForm") saveStockForm();
+  else if(ev.target.id === "divForm") saveDivForm();
   else if(ev.target.id === "gateForm") gateSubmit(ev.target);
 });
 document.addEventListener("paste", ev => {
@@ -1178,9 +1974,22 @@ document.addEventListener("paste", ev => {
 });
 let qT;
 $("#q").addEventListener("input", ev => { clearTimeout(qT); qT = setTimeout(() => { S.filter.q = ev.target.value; if(S.view !== "archive") S.view = "archive"; render(); }, 150); });
-window.addEventListener("online", () => { updateSyncUI(); pull(); });
+document.addEventListener("input", ev => {
+  const t = ev.target;
+  if(t.id === "st-q" && OV && OV.kind === "stsearch") onStockSearchInput(t.value);
+  if(t.id === "dv-amt" && OV && OV.kind === "divform"){ OV.d.amount = t.value; const h = $("#dvKrwHint"); if(h) h.textContent = dvKrwHint(); }
+});
+window.addEventListener("online", () => { updateSyncUI(); pull(); if(S.view === "stocks") refreshQuotes(true); });
 window.addEventListener("offline", () => updateSyncUI());
-document.addEventListener("visibilitychange", () => { if(document.visibilityState === "visible" && S.uid && Date.now() - S.lastPull > 30000) pull(); });
+document.addEventListener("visibilitychange", () => {
+  if(document.visibilityState !== "visible" || !S.uid) return;
+  if(Date.now() - S.lastPull > 30000) pull();
+  if(S.view === "stocks" || (OV && OV.kind === "stock")) refreshQuotes();
+});
+setInterval(() => {
+  if(S.uid && document.visibilityState === "visible" && (S.view === "stocks" || (OV && OV.kind === "stock"))) refreshQuotes();
+  if(OV && OV.kind === "stock" && (OV.range === "1d" || OV.range === "5d") && document.visibilityState === "visible") loadHistory();
+}, 60000);
 window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); S.installEvt = e; if(S.uid) renderChrome(); });
 window.addEventListener("appinstalled", () => { S.installEvt = null; toast("산시야를 설치했어요."); if(S.uid) renderChrome(); });
 
@@ -1220,8 +2029,10 @@ async function boot(){
 async function startApp(user){
   resetState();
   S.uid = user.id; S.email = user.email || "";
-  const [ents, st, ob, ls, urls] = await Promise.all(["entries","settings","outbox","lastSync","urls"].map(n => KV.get(k(n))));
+  const [ents, st, ob, ls, urls, stx, dvs, qts] = await Promise.all(["entries","settings","outbox","lastSync","urls","stocks","divs","quotes"].map(n => KV.get(k(n))));
   S.entries = Array.isArray(ents) ? ents : []; S.loaded = Array.isArray(ents);
+  S.stocks = Array.isArray(stx) ? stx : []; S.divs = Array.isArray(dvs) ? dvs : [];
+  if(qts && qts.quotes){ S.quotes = qts.quotes; S.fx = qts.fx || null; S.quotesAt = qts.at || 0; }
   if(st && Array.isArray(st.categories) && st.categories.length) S.cats = st.categories;
   S.outbox = Array.isArray(ob) ? ob : []; S.lastSync = ls || 0;
   if(Array.isArray(urls) && S.B.kind !== "local") S.urls = new Map(urls.filter(([, c]) => c && c.url && c.exp > Date.now()));
