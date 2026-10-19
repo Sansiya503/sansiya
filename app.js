@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.0.1";
+const APP_VERSION = "1.1.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -536,7 +536,7 @@ function statsHtml(){
   const W = 600, H = 210, top = 24, bot = 40, left = 8, bw = (W - left * 2) / 12;
   const bars = months.map((o, i) => {
     const h = (H - top - bot) * o.n / max, x = left + i * bw + bw * .18, w = bw * .64, yy = H - bot - h, cur = i === 11;
-    return `<rect x="${x.toFixed(1)}" y="${yy.toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(h, o.n ? 2 : 0).toFixed(1)}" rx="2" fill="${cur ? "var(--accent)" : "var(--accent-mid)"}"/>
+    return `<rect x="${x.toFixed(1)}" y="${yy.toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(h, o.n ? 2 : 0).toFixed(1)}" rx="2" fill="${cur ? "var(--accent-strong)" : "var(--accent-mid)"}"/>
       ${o.n ? `<text x="${(x + w / 2).toFixed(1)}" y="${(yy - 6).toFixed(1)}" text-anchor="middle" font-size="11" font-family="IBM Plex Mono, monospace" fill="var(--ink-2)">${o.n}</text>` : ""}
       <text x="${(x + w / 2).toFixed(1)}" y="${H - bot + 18}" text-anchor="middle" font-size="11" font-family="IBM Plex Mono, monospace" fill="${cur ? "var(--ink)" : "var(--ink-3)"}">${o.m}월</text>
       ${o.m === 1 || i === 0 ? `<text x="${(x + w / 2).toFixed(1)}" y="${H - bot + 33}" text-anchor="middle" font-size="10" font-family="IBM Plex Mono, monospace" fill="var(--ink-3)">${o.y}</text>` : ""}`;
@@ -859,7 +859,7 @@ function syncThemeColor(){
   const t = themeNow();
   THEME_META.forEach(({ m, content, media }) => {
     if(t === "system"){ m.setAttribute("content", content); if(media) m.setAttribute("media", media); }
-    else { m.setAttribute("content", t === "dark" ? "#101216" : "#F5F6F8"); m.removeAttribute("media"); }
+    else { m.setAttribute("content", t === "dark" ? "#14110D" : "#FFF9EF"); m.removeAttribute("media"); }
   });
 }
 syncThemeColor();
