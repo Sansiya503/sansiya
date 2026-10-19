@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.6.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -454,25 +454,6 @@ const VIEWS = [["archive","아카이브"],["calendar","캘린더"],["stats","통
 function renderChrome(){
   $("#brandCount").textContent = S.loaded ? `Personal register · ${S.entries.length}건` : "Personal register";
   $("#tabbar").innerHTML = VIEWS.map(([v, l]) => `<button type="button" data-view="${v}" aria-current="${S.view === v}">${l}</button>`).join("");
-  const f = S.filter;
-  const cats = S.cats.map(c => ({ ...c, n:count(e => e.cat === c.code) }));
-  const tags = tagCounts().slice(0, 14);
-  $("#side").innerHTML = `
-    <div><h4>보기</h4><div class="nav">${VIEWS.map(([v, l]) => `<button type="button" data-view="${v}" aria-current="${S.view === v}">${l}</button>`).join("")}</div></div>
-    <div><h4>유형</h4><div class="nav">
-      ${[["all","전체",S.entries.length],["scrap","스크랩 · 정보",count(e => e.type === "scrap")],["taste","취향 · 컬렉션",count(e => e.type === "taste")]]
-        .map(([key, l, n]) => `<button type="button" data-type="${key}" aria-current="${f.type === key}">${l}<span class="n">${n}</span></button>`).join("")}
-    </div></div>
-    <div><h4>분야</h4><div class="nav">
-      <button type="button" data-cat="all" aria-current="${f.cat === "all"}"><span class="code">ALL</span>전체 분야<span class="n">${S.entries.length}</span></button>
-      ${cats.map(c => `<button type="button" data-cat="${esc(c.code)}" aria-current="${f.cat === c.code}"><span class="code">${esc(c.code)}</span>${esc(c.name)}<span class="n">${c.n || ""}</span></button>`).join("")}
-    </div></div>
-    ${tags.length ? `<div><h4>태그</h4><div class="tagcloud">${tags.map(([t, n]) => `<button type="button" class="chip ${f.tag === t ? "on" : ""}" data-tag="${esc(t)}">#${esc(t)} <span class="mono" style="font-size:10.5px;opacity:.7">${n}</span></button>`).join("")}</div></div>` : ""}
-    <div class="side-foot">
-      ${S.installEvt ? `<button type="button" class="install" data-act="install">앱으로 설치하기</button>` : ""}
-      <button type="button" data-act="cats">분야 관리</button>
-      <button type="button" data-act="settings">설정 · 백업</button>
-    </div>`;
   updateSyncUI();
 }
 
@@ -543,6 +524,7 @@ function archiveHtml(){
       <button type="button" class="chip ${f.cat === "all" ? "on" : ""}" data-cat="all">모든 분야</button>
       ${S.cats.map(c => `<button type="button" class="chip ${f.cat === c.code ? "on" : ""}" data-cat="${esc(c.code)}">${esc(c.name)}</button>`).join("")}
     </div>
+    ${(() => { const tags = tagCounts().slice(0, 14); return tags.length ? `<div class="mfilters mtags"><span class="mt-l">태그</span>${tags.map(([t, n]) => `<button type="button" class="chip ${f.tag === t ? "on" : ""}" data-tag="${esc(t)}">#${esc(t)} <span class="mono" style="font-size:10.5px;opacity:.7">${n}</span></button>`).join("")}</div>` : ""; })()}
     <div class="vhead">
       <h2>${esc(title)}</h2><span class="sub mono">${list.length}건</span>
       <div class="tools">
