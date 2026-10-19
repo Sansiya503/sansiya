@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.0.1";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -102,23 +102,40 @@ function toRow(e, uid){
 
 function makeSupabaseBackend(url, key){
   let sb = null, user = null;
+  // password-reset links come back as #access_token=…&type=recovery (or #error=…)
+  const hash = new URLSearchParams(location.hash.slice(1));
+  let recovery = hash.get("type") === "recovery";
+  const linkError = hash.get("error_description") ? (hash.get("error_code") || hash.get("error") || "error") : null;
   return {
     kind: "supabase",
     async init(){
       if(!window.supabase) await loadScript(SUPA_SRC);
-      sb = window.supabase.createClient(url, key, { auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:false, storageKey:"sansiya-auth" } });
-      const { data } = await sb.auth.getSession();
-      user = data && data.session ? data.session.user : null;
+      sb = window.supabase.createClient(url, key, { auth: { persistSession:true, autoRefreshToken:true, detectSessionInUrl:true, flowType:"implicit", storageKey:"sansiya-auth" } });
       sb.auth.onAuthStateChange((ev, session) => {
+        if(ev === "PASSWORD_RECOVERY") recovery = true;
         if(ev === "SIGNED_OUT" && user){ user = null; onSignedOut(); }
         else if(session && session.user) user = session.user;
       });
+      const { data } = await sb.auth.getSession();
+      user = data && data.session ? data.session.user : null;
+      if(location.hash && /access_token|error|type=/.test(location.hash)) history.replaceState(null, "", location.pathname + location.search);
       return user;
     },
     user: () => user,
+    recovery: () => recovery,
+    clearRecovery(){ recovery = false; },
+    linkError: () => linkError,
     async signIn(email, password){
       const { data, error } = await sb.auth.signInWithPassword({ email, password });
       if(error) throw error; user = data.user; return user;
+    },
+    async resetPassword(email){
+      const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+      if(error) throw error;
+    },
+    async updatePassword(password){
+      const { data, error } = await sb.auth.updateUser({ password });
+      if(error) throw error; if(data && data.user) user = data.user; return user;
     },
     async signOut(){ user = null; try{ await sb.auth.signOut(); }catch(e){} },
     async fetchEntries(){
@@ -174,7 +191,12 @@ function makeLocalBackend(){
     kind: "local",
     async init(){ return user; },
     user: () => user,
+    recovery: () => false,
+    clearRecovery(){},
+    linkError: () => null,
     async signIn(){ return user; },
+    async resetPassword(){ throw new Error("이 기기 저장 모드에서는 쓸 수 없어요."); },
+    async updatePassword(){ throw new Error("이 기기 저장 모드에서는 쓸 수 없어요."); },
     async signOut(){},
     async fetchEntries(){ net(); return Object.values(await all()); },
     async upsertMany(list){ net(); const m = await all(); list.forEach(e => { m[e.id] = JSON.parse(JSON.stringify(e)); }); await KV.set("local:entries", m); },
@@ -785,7 +807,7 @@ function renderSettings(){
         : `<span>${esc(S.email || "로그인됨")}</span>
           ${OV.confirmOut ? `<p class="err">${n ? `아직 올라가지 않은 변경 ${n}건이 있어요. 지금 로그아웃하면 사라져요. ` : ""}이 기기에 저장된 기록 사본을 지우고 로그아웃할까요?</p>
             <div class="acts"><button class="btn small danger" type="button" data-act="signOutYes">로그아웃</button><button class="btn small" type="button" data-act="signOutNo">취소</button></div>`
-          : `<div class="acts"><button class="btn small" type="button" data-act="signOut">로그아웃</button></div>`}`}
+          : `<div class="acts"><button class="btn small" type="button" data-act="changePw">비밀번호 바꾸기</button><button class="btn small" type="button" data-act="signOut">로그아웃</button></div>`}`}
       </div></section>
       ${local ? "" : `<section><h3>동기화</h3><div class="sv">
         <span>${S.sync === "error" ? "동기화 오류" : !navigator.onLine ? "오프라인" : n ? `올라가길 기다리는 변경 ${n}건` : "모든 기록이 동기화됐어요"}</span>
@@ -919,11 +941,27 @@ async function doImport(){
 }
 
 /* ---------- gate: setup / login ---------- */
-function showGate(kind, msg){
+function showGate(kind, msg, note){
   $("#app").hidden = true;
   const g = $("#gate"); g.hidden = false;
   const cfg = getConfig();
-  const foot = `<div class="sheetno"><span>${kind === "setup" ? "SHEET 00 · SETUP" : kind === "login" ? "SHEET 01 · SIGN IN" : "SHEET 99 · NOTICE"}</span><span>v${APP_VERSION}</span></div>`;
+  const sheet = { setup:"SHEET 00 · SETUP", login:"SHEET 01 · SIGN IN", recover:"SHEET 02 · NEW PASSWORD" }[kind] || "SHEET 99 · NOTICE";
+  const foot = `<div class="sheetno"><span>${sheet}</span><span>v${APP_VERSION}</span></div>`;
+  if(kind === "recover"){
+    const changing = !!S.uid;
+    g.innerHTML = `<form class="gate-card" id="gateForm" data-kind="recover" novalidate>${MARK}
+      <h1>새 비밀번호</h1><p class="lede">${changing ? "바꿀 비밀번호를 정해 주세요." : "산시야에 로그인할 새 비밀번호를 정해 주세요."}</p>
+      <div class="fld"><label for="g-new">새 비밀번호 (6자 이상)</label><input id="g-new" type="password" autocomplete="new-password" required></div>
+      <div class="fld"><label for="g-new2">새 비밀번호 확인</label><input id="g-new2" type="password" autocomplete="new-password" required></div>
+      <label class="showpw"><input type="checkbox" data-showpw="g-new,g-new2"> 비밀번호 보기</label>
+      ${msg ? `<p class="err">${esc(msg)}</p>` : ""}
+      <button class="btn primary block" type="submit" id="g-submit">${changing ? "비밀번호 바꾸기" : "저장하고 시작하기"}</button>
+      ${changing ? `<button class="btn block" type="button" data-gate="cancelPw">취소</button>` : ""}
+      <p class="foot">입력이 이상하면 키보드가 한글 상태인지 확인해 주세요. ‘비밀번호 보기’를 켜면 입력한 글자를 볼 수 있어요.</p>
+      ${foot}</form>`;
+    const f = $("#g-new"); if(f) f.focus();
+    return;
+  }
   if(kind === "setup"){
     g.innerHTML = `<form class="gate-card" id="gateForm" data-kind="setup" novalidate>${MARK}
       <h1>산시야</h1><p class="lede">처음 한 번만 Supabase 연결 정보를 넣어 주세요.</p>
@@ -939,9 +977,11 @@ function showGate(kind, msg){
       <h1>산시야</h1><p class="lede">나의 스크랩과 취향 기록장</p>
       <div class="fld"><label for="g-email">이메일</label><input id="g-email" type="email" inputmode="email" autocomplete="username" required></div>
       <div class="fld"><label for="g-pw">비밀번호</label><input id="g-pw" type="password" autocomplete="current-password" required></div>
+      <label class="showpw"><input type="checkbox" data-showpw="g-pw"> 비밀번호 보기</label>
       ${msg ? `<p class="err">${esc(msg)}</p>` : ""}
+      ${note ? `<p class="note">${esc(note)}</p>` : ""}
       <button class="btn primary block" type="submit" id="g-submit">로그인</button>
-      <p class="foot">계정은 Supabase 대시보드의 Authentication → Users에서 만든 이메일과 비밀번호로 로그인해요.
+      <p class="foot"><button type="button" data-gate="forgot">비밀번호를 잊으셨나요?</button> 이메일을 적고 누르면 새 비밀번호를 정하는 링크를 메일로 보내 드려요.
         ${cfg && cfg.source === "device" ? `<br><br><button type="button" data-gate="reset">연결 정보 다시 입력</button>` : ""}</p>
       ${foot}</form>`;
   }else{
@@ -973,6 +1013,23 @@ async function gateSubmit(form){
     if(key.length < 20){ showGate("setup", "Publishable key가 너무 짧아요. 전체를 복사해 붙여 넣어 주세요."); $("#g-url").value = url; return; }
     try{ localStorage.setItem("sansiya-config", JSON.stringify({ supabaseUrl:url, supabaseKey:key })); localStorage.removeItem("sansiya-mode"); }catch(e){}
     boot();
+  }else if(kind === "recover"){
+    const pw = $("#g-new").value, pw2 = $("#g-new2").value;
+    if(pw.length < 6){ showGate("recover", "비밀번호는 6자 이상이어야 해요."); return; }
+    if(pw !== pw2){ showGate("recover", "두 비밀번호가 서로 달라요. 다시 입력해 주세요."); return; }
+    const btn = $("#g-submit"); btn.disabled = true; btn.textContent = "저장 중…";
+    try{
+      const user = await S.B.updatePassword(pw);
+      S.B.clearRecovery();
+      if(S.uid){ hideGate(); render(); toast("비밀번호를 바꿨어요."); }
+      else { await startApp(user || S.B.user()); toast("새 비밀번호를 저장했어요."); }
+    }catch(err){
+      const m = errMsg(err);
+      showGate("recover", /same|different from the old/i.test(m) ? "이전 비밀번호와 다른 비밀번호를 써 주세요."
+        : /weak|at least|characters/i.test(m) ? "더 길거나 복잡한 비밀번호를 써 주세요."
+        : /session|jwt|expired|not authenticated/i.test(m) ? "링크가 만료됐어요. 로그인 화면에서 ‘비밀번호를 잊으셨나요?’를 다시 눌러 주세요."
+        : isNetErr(err) ? "인터넷 연결을 확인해 주세요." : m);
+    }
   }else if(kind === "login"){
     const email = $("#g-email").value.trim(), pw = $("#g-pw").value;
     if(!email || !pw){ showGate("login", "이메일과 비밀번호를 모두 적어 주세요."); $("#g-email").value = email; return; }
@@ -982,7 +1039,7 @@ async function gateSubmit(form){
       await startApp(user);
     }catch(err){
       const m = errMsg(err);
-      const msg = /invalid login credentials/i.test(m) ? "이메일 또는 비밀번호가 맞지 않아요."
+      const msg = /invalid login credentials/i.test(m) ? "이메일 또는 비밀번호가 맞지 않아요. 키보드가 한글 상태는 아닌지 확인해 보고, 계속 안 되면 아래 ‘비밀번호를 잊으셨나요?’를 눌러 주세요."
         : /email not confirmed/i.test(m) ? "이메일 인증이 안 된 계정이에요. 대시보드에서 Auto Confirm User를 켜고 만들었는지 확인해 주세요."
         : /invalid api key|no api key|apikey/i.test(m) ? "연결 키가 맞지 않아요. 연결 정보를 다시 확인해 주세요."
         : isNetErr(err) ? (navigator.onLine ? "Supabase에 연결하지 못했어요. Project URL이 맞는지, 프로젝트가 일시정지되지 않았는지 확인해 주세요." : "인터넷에 연결되어 있지 않아요.")
@@ -990,6 +1047,19 @@ async function gateSubmit(form){
       showGate("login", msg); const e = $("#g-email"); if(e) e.value = email;
     }
   }
+}
+
+async function forgotPassword(){
+  const email = ($("#g-email") || {}).value ? $("#g-email").value.trim() : "";
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ showGate("login", "비밀번호를 다시 정할 이메일을 위 칸에 먼저 적어 주세요."); if($("#g-email")) $("#g-email").value = email; return; }
+  try{
+    await S.B.resetPassword(email);
+    showGate("login", null, "비밀번호 재설정 메일을 보냈어요. 메일의 링크를 누르면 새 비밀번호를 정할 수 있어요. 메일이 안 보이면 스팸함도 확인해 주세요.");
+  }catch(err){
+    const m = errMsg(err);
+    showGate("login", /rate|limit|seconds|too many/i.test(m) ? "메일을 너무 자주 요청했어요. 잠시 후 다시 시도해 주세요." : isNetErr(err) ? "인터넷 연결을 확인해 주세요." : m);
+  }
+  if($("#g-email")) $("#g-email").value = email;
 }
 
 /* ---------- events ---------- */
@@ -1003,6 +1073,8 @@ document.addEventListener("click", ev => {
     if(ds.gate === "local"){ try{ localStorage.setItem("sansiya-mode", "local"); }catch(e){} boot(); }
     else if(ds.gate === "reset"){ try{ localStorage.removeItem("sansiya-config"); }catch(e){} showGate("setup"); }
     else if(ds.gate === "retry") location.reload();
+    else if(ds.gate === "cancelPw"){ hideGate(); render(); }
+    else if(ds.gate === "forgot") forgotPassword();
     return;
   }
   if(ds.view){ S.view = ds.view; render(); window.scrollTo({ top:0 }); return; }
@@ -1048,6 +1120,7 @@ document.addEventListener("click", ev => {
     case "signOut": OV.confirmOut = true; renderSettings(); break;
     case "signOutNo": OV.confirmOut = false; renderSettings(); break;
     case "signOutYes": signOut(); break;
+    case "changePw": closeOv(); showGate("recover"); break;
     case "toSetup": try{ localStorage.removeItem("sansiya-mode"); }catch(e){} closeOv(); location.reload(); break;
     case "install":
       if(S.installEvt){ const e = S.installEvt; S.installEvt = null; e.prompt(); e.userChoice.finally(() => { renderChrome(); if(OV && OV.kind === "settings") renderSettings(); }); }
@@ -1080,6 +1153,7 @@ document.addEventListener("keydown", ev => {
 });
 document.addEventListener("change", ev => {
   const t = ev.target;
+  if(t.dataset && t.dataset.showpw){ t.dataset.showpw.split(",").forEach(id => { const i = document.getElementById(id); if(i) i.type = t.checked ? "text" : "password"; }); return; }
   if(t.id === "sortSel"){ S.sort = t.value; savePrefs(); render(); }
   if(t.id === "f-photo" && t.files.length){ uploadPhotos(t.files); }
   if(t.id === "f-cat" && OV){ OV.draft.cat = t.value; }
@@ -1135,7 +1209,12 @@ async function boot(){
     return;
   }
   S.B = B;
-  if(!user){ showGate("login"); return; }
+  if(user && B.recovery()){ showGate("recover"); return; }
+  if(!user){
+    const le = B.linkError();
+    showGate("login", le ? (le === "otp_expired" ? "메일 링크가 만료됐거나 이미 사용됐어요. 이메일을 적고 ‘비밀번호를 잊으셨나요?’를 다시 눌러 주세요." : "메일 링크를 사용할 수 없어요. 다시 요청해 주세요.") : undefined);
+    return;
+  }
   await startApp(user);
 }
 async function startApp(user){

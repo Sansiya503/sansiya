@@ -310,3 +310,8 @@ img[data-path]:not([src]){visibility:hidden}
   .set section{grid-template-columns:minmax(0,1fr)}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* login helpers */
+.showpw{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2);cursor:pointer;margin-top:-6px;width:max-content}
+.showpw input{width:16px;height:16px;accent-color:var(--accent);margin:0}
+.gate-card .note{color:var(--ok);font-size:13px;margin:0;line-height:1.55}
