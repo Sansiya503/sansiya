@@ -1,6 +1,6 @@
 /* 산시야 service worker — keeps the app usable offline.
  * 수정 후 배포할 때는 아래 VERSION 숫자를 올려 주세요. 그래야 폰에 새 버전이 적용돼요. */
-const VERSION = "sansiya-v1.2.1";
+const VERSION = "sansiya-v1.3.0";
 const SHELL = [
   "./", "./index.html", "./styles.css", "./app.js", "./config.js", "./manifest.webmanifest",
   "./favicon.svg", "./icon-192.png", "./icon-512.png", "./maskable-512.png", "./apple-touch-icon.png"
@@ -9,6 +9,7 @@ const LIB = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/
 const FONT_CACHE = "sansiya-fonts";
 const PHOTO_CACHE = "sansiya-photos";
 const LIB_CACHE = "sansiya-lib";
+const LOGO_CACHE = "sansiya-logos";
 
 self.addEventListener("install", event => {
   event.waitUntil((async () => {
@@ -21,7 +22,7 @@ self.addEventListener("install", event => {
 
 self.addEventListener("activate", event => {
   event.waitUntil((async () => {
-    const keep = new Set([VERSION, FONT_CACHE, PHOTO_CACHE, LIB_CACHE]);
+    const keep = new Set([VERSION, FONT_CACHE, PHOTO_CACHE, LIB_CACHE, LOGO_CACHE]);
     for(const k of await caches.keys()) if(!keep.has(k)) await caches.delete(k);
     await self.clients.claim();
   })());
@@ -81,6 +82,18 @@ self.addEventListener("fetch", event => {
       const net = fetch(req).then(res => { if(res.ok || res.type === "opaque") c.put(req, res.clone()); return res; }).catch(() => null);
       if(hit){ event.waitUntil(net); return hit; }
       return (await net) || Response.error();
+    })());
+    return;
+  }
+
+  // stock logos: cache first so they show offline
+  if(url.hostname === "financialmodelingprep.com" || url.hostname === "assets.parqet.com"){
+    event.respondWith((async () => {
+      const c = await caches.open(LOGO_CACHE);
+      const hit = await c.match(req); if(hit) return hit;
+      const res = await fetch(req);
+      if(res.ok || res.type === "opaque"){ await c.put(req, res.clone()); event.waitUntil(trim(LOGO_CACHE, 300)); }
+      return res;
     })());
     return;
   }

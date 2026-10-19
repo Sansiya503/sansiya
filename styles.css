@@ -358,7 +358,6 @@ img[data-path]:not([src]){visibility:hidden}
 .st-row:hover{background:var(--sunk)}
 .st-row-tight{grid-template-columns:minmax(0,1fr) auto;min-height:48px;padding:8px}
 .st-ava{position:relative;width:44px;height:44px;border-radius:50%;background:var(--ava);color:var(--accent-ink);display:inline-flex;align-items:center;justify-content:center;font-weight:600;font-size:17px;flex:none}
-.st-ava i{position:absolute;right:-4px;bottom:-3px;font-style:normal;font-size:9px;font-weight:600;letter-spacing:.02em;background:var(--surface);color:var(--ink-2);border:1px solid var(--line-2);border-radius:4px;padding:0 3px;line-height:13px}
 .st-ava.lg{width:52px;height:52px;font-size:20px}
 .st-ava.sm{width:34px;height:34px;font-size:14px}
 .st-main{display:flex;flex-direction:column;min-width:0;gap:1px}
@@ -449,3 +448,11 @@ img[data-path]:not([src]){visibility:hidden}
 .st-heart[aria-pressed="true"] svg{fill:var(--up);stroke:var(--up)}
 .st-heart:hover{border-color:var(--ink-3)}
 body:has(.st-actions) .toast{bottom:calc(92px + env(safe-area-inset-bottom,0px))}
+
+/* stock logos (white backplate: logos are drawn for light backgrounds) */
+.st-ava{overflow:hidden}
+.st-ini{position:relative;z-index:0}
+.st-logo{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;padding:14%;box-sizing:border-box;background:#fff;border-radius:50%;opacity:0;transition:opacity .15s;z-index:1}
+.st-logo.ok{opacity:1}
+.st-ava:has(.st-logo.ok){box-shadow:inset 0 0 0 1px var(--line-2)}
+.st-ava:has(.st-logo.ok)::after{content:"";position:absolute;inset:0;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(0,0,0,.06);z-index:2;pointer-events:none}

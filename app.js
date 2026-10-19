@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.2.1";
+const APP_VERSION = "1.3.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -419,6 +419,13 @@ function hydrateImages(){
 }
 document.addEventListener("error", ev => {
   const t = ev.target;
+  if(t && t.classList && t.classList.contains("st-logo")){
+    const sym = t.dataset.sym, next = +t.dataset.idx + 1;
+    if(navigator.onLine === false){ t.remove(); return; }
+    if(next < LOGO_SRC.length){ t.dataset.idx = next; t.src = LOGO_SRC[next](sym); }
+    else { setLogoState(sym, "none"); t.remove(); }
+    return;
+  }
   if(t && t.tagName === "IMG" && t.dataset && t.dataset.path && !t.dataset.retried && navigator.onLine){
     t.dataset.retried = "1"; S.urls.delete(t.dataset.path); t.removeAttribute("src"); hydrateImages();
   }
@@ -651,12 +658,36 @@ const num = v => typeof v === "number" && isFinite(v);
 const codeOf = sym => String(sym || "").replace(/\.(KS|KQ)$/, "");
 const exchLabel = s => s.market === "KR" ? (/\.KQ$/.test(s.symbol) ? "코스닥" : "코스피") : "미국";
 const parseNum = v => { const n = parseFloat(String(v ?? "").replace(/[,\s원$₩주]/g, "")); return isFinite(n) ? n : null; };
+// company logos: Financial Modeling Prep first, Parqet as backup, initial letter if neither has one
+const LOGO_SRC = [
+  sym => `https://financialmodelingprep.com/image-stock/${encodeURIComponent(sym)}.png`,
+  sym => `https://assets.parqet.com/logos/symbol/${encodeURIComponent(sym)}?format=png`
+];
+const logoState = (() => { try{ return JSON.parse(localStorage.getItem("sansiya-logos") || "{}"); }catch(e){ return {}; } })();
+let logoSaveT = 0;
+function setLogoState(sym, v){
+  logoState[sym] = v; clearTimeout(logoSaveT);
+  logoSaveT = setTimeout(() => { try{ localStorage.setItem("sansiya-logos", JSON.stringify(logoState)); }catch(e){} }, 500);
+}
 function avaHtml(s, size){
   let h = 0; for(const ch of String(s.symbol || s.name || "?")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   const c = PAL[h % PAL.length];
   const ch0 = (String(s.name || s.symbol || "?").match(/[가-힣A-Za-z0-9]/) || ["?"])[0].toUpperCase();
-  return `<span class="st-ava${size ? " " + size : ""}" style="--ava:${c}" aria-hidden="true">${esc(ch0)}${s.market === "US" ? "<i>US</i>" : ""}</span>`;
+  const sym = String(s.symbol || "");
+  const st = logoState[sym];
+  const idx = typeof st === "number" ? st : 0;
+  const img = /^[A-Za-z0-9.\-]{1,15}$/.test(sym) && st !== "none" && idx < LOGO_SRC.length
+    ? `<img class="st-logo" src="${esc(LOGO_SRC[idx](sym))}" data-sym="${esc(sym)}" data-idx="${idx}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : "";
+  return `<span class="st-ava${size ? " " + size : ""}" style="--ava:${c}" aria-hidden="true"><span class="st-ini">${esc(ch0)}</span>${img}</span>`;
 }
+// logo loaded -> show it; failed -> try the next source, then fall back to the initial letter
+document.addEventListener("load", ev => {
+  const t = ev.target;
+  if(t && t.classList && t.classList.contains("st-logo")){
+    if(t.naturalWidth < 8){ t.dispatchEvent(new Event("error")); return; }
+    t.classList.add("ok"); const sym = t.dataset.sym; if(logoState[sym] !== +t.dataset.idx) setLogoState(sym, +t.dataset.idx);
+  }
+}, true);
 function fmtMoney(v, cur, sign){
   if(!num(v)) return "-";
   const sg = sign && v > 0 ? "+" : (v < 0 ? "-" : "");
