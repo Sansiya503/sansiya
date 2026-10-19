@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.2.1";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -654,7 +654,7 @@ const parseNum = v => { const n = parseFloat(String(v ?? "").replace(/[,\s원$�
 function avaHtml(s, size){
   let h = 0; for(const ch of String(s.symbol || s.name || "?")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   const c = PAL[h % PAL.length];
-  const ch0 = String(s.name || s.symbol || "?").trim().charAt(0).toUpperCase();
+  const ch0 = (String(s.name || s.symbol || "?").match(/[가-힣A-Za-z0-9]/) || ["?"])[0].toUpperCase();
   return `<span class="st-ava${size ? " " + size : ""}" style="--ava:${c}" aria-hidden="true">${esc(ch0)}${s.market === "US" ? "<i>US</i>" : ""}</span>`;
 }
 function fmtMoney(v, cur, sign){
