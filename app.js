@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.9.1";
+const APP_VERSION = "1.9.2";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -1115,8 +1115,24 @@ function renderIndexDetail(){
 }
 
 /* ---------- stocks: allocation donut ---------- */
-// one orange ramp, deepest for the biggest holding; everything past the 6th folds into "기타"
-const DONUT = ["#B85F00", "#E68A00", "#FFA500", "#FFBF5E", "#FFD48A", "#FFE4B3", "#FFF1D9"];
+// contrasting colours that go around the ring in an order checked for colour-blind and normal vision
+// (every neighbouring pair, both themes); the biggest holding is always blue. Hex values live in styles.css.
+const DONUT_RINGS = {
+  1:["blue"], 2:["blue", "green"], 3:["blue", "pink", "green"], 4:["blue", "green", "violet", "red"],
+  5:["blue", "pink", "green", "violet", "red"], 6:["blue", "aqua", "violet", "green", "cyan", "red"],
+  7:["blue", "aqua", "violet", "red", "cyan", "green", "pink"]
+};
+const DONUT = DONUT_RINGS[7].map(n => `var(--dn-${n})`);
+function ringColours(sl, best){
+  const ring = best.slices, n = ring.filter(x => !x.other).length, pal = DONUT_RINGS[Math.min(7, Math.max(1, n))];
+  let p0 = ring.findIndex(x => x.i === 0); if(p0 < 0) p0 = 0;
+  let k = 0;
+  for(let j = 0; j < ring.length; j++){
+    const x = ring[(p0 + j) % ring.length];
+    x.color = x.other ? "var(--donut-other)" : `var(--dn-${pal[k++ % pal.length]})`;
+    sl[x.i].color = x.color;
+  }
+}
 function allocSlices(P){
   const rows = P.rows.map(({ s, p }) => ({ name:s.name, v:p.valueKRW || 0, ids:[s.id] })).filter(r => r.v > 0);
   let sl = rows;
@@ -1194,10 +1210,10 @@ function donutPlan(P){
   let sl = allocSlices(P);
   for(let guard = 0; guard < 6; guard++){
     const best = sl.length ? donutLayout(sl) : null;
-    if(!best || best.score < 1e4) return { sl, best };
+    if(!best || best.score < 1e4){ if(best) ringColours(sl, best); return { sl, best }; }
     const small = sl.filter(x => !x.other && x.pct < 3).sort((a, b) => a.pct - b.pct);
     const other = sl.find(x => x.other);
-    if(small.length < (other ? 1 : 2)) return { sl, best };
+    if(small.length < (other ? 1 : 2)){ ringColours(sl, best); return { sl, best }; }
     const fold = other ? [other, small[0]] : small.slice(0, 2);
     const rest = sl.filter(x => !fold.includes(x));
     const ids = fold.flatMap(x => x.ids), v = fold.reduce((a, x) => a + x.v, 0);
@@ -1205,7 +1221,8 @@ function donutPlan(P){
     const tot = sl.reduce((a, x) => a + x.v, 0) || 1;
     let k = 0; sl.forEach(x => { x.pct = x.v / tot * 100; x.color = x.other ? "var(--donut-other)" : DONUT[k++]; });
   }
-  return { sl, best:donutLayout(sl) };
+  const best = donutLayout(sl); ringColours(sl, best);
+  return { sl, best };
 }
 function donutSvg(P, plan){
   const { sl, best } = plan; if(!sl.length || !best) return "";

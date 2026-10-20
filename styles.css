@@ -10,7 +10,8 @@
   --apricot:#FFB27F; --cantaloupe:#FFA95C;
   --taste-bg:#FFB27F; --taste-fg:#2B2013; --chip-on-bg:#FFD580; --chip-on-fg:#6E4200;
   --danger:#B93A27; --ok:#2F7D4F; --scrim:rgba(43,32,19,.45);
-  --up:#CF3A2A; --down:#2A5FCC; --donut-other:#D9CFC2;
+  --up:#CF3A2A; --down:#2A5FCC; --donut-other:#C9C2B8;
+  --dn-blue:#2a78d6; --dn-aqua:#1baf7a; --dn-pink:#e87ba4; --dn-green:#008300; --dn-violet:#6250d6; --dn-red:#e34948; --dn-cyan:#1597b8;
   --f-display:"Hahmlet","Noto Serif KR","AppleMyungjo",serif;
   --f-body:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
   --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
@@ -25,7 +26,7 @@
   --accent-soft:#3A2C14; --accent-mid:#FFC067; --accent-strong:#FFA500;
   --apricot:#FFB27F; --cantaloupe:#FFA95C;
   --taste-bg:#45291A; --taste-fg:#FFB27F; --chip-on-bg:#3A2C14; --chip-on-fg:#FFD580;
-  --danger:#EE7B66; --ok:#6CC08F; --scrim:rgba(0,0,0,.6); --up:#FF6B5C; --down:#6E9EFF; --donut-other:#5E544A; color-scheme:dark }}
+  --danger:#EE7B66; --ok:#6CC08F; --scrim:rgba(0,0,0,.6); --up:#FF6B5C; --down:#6E9EFF; --donut-other:#5E584F; --dn-blue:#3987e5; --dn-aqua:#199e70; --dn-pink:#d55181; --dn-green:#008300; --dn-violet:#9085e9; --dn-red:#e66767; --dn-cyan:#1d9cba; color-scheme:dark }}
 :root[data-theme="dark"]{
   --bg:#14110D; --surface:#1C1813; --sunk:#241F18;
   --ink:#F3EBDF; --ink-2:#BFB2A0; --ink-3:#9A8D7C;
@@ -34,7 +35,7 @@
   --accent-soft:#3A2C14; --accent-mid:#FFC067; --accent-strong:#FFA500;
   --apricot:#FFB27F; --cantaloupe:#FFA95C;
   --taste-bg:#45291A; --taste-fg:#FFB27F; --chip-on-bg:#3A2C14; --chip-on-fg:#FFD580;
-  --danger:#EE7B66; --ok:#6CC08F; --scrim:rgba(0,0,0,.6); --up:#FF6B5C; --down:#6E9EFF; --donut-other:#5E544A; color-scheme:dark }
+  --danger:#EE7B66; --ok:#6CC08F; --scrim:rgba(0,0,0,.6); --up:#FF6B5C; --down:#6E9EFF; --donut-other:#5E584F; --dn-blue:#3987e5; --dn-aqua:#199e70; --dn-pink:#d55181; --dn-green:#008300; --dn-violet:#9085e9; --dn-red:#e66767; --dn-cyan:#1d9cba; color-scheme:dark }
 
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
