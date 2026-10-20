@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.9.2";
+const APP_VERSION = "1.9.3";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -1145,7 +1145,7 @@ function allocSlices(P){
   return sl;
 }
 const DONUT_MEMO = new Map();
-const DG = { W:440, H:280, cx:220, cy:140, R:98, r:56, GAP:20 };
+const DG = { W:440, H:280, cx:220, cy:140, R:104, r:60, GAP:18 };
 // places slices and labels so every leader line is one straight horizontal stroke (memoised by the slice shares)
 function donutLayout(sl){
   const { H, cx, cy, R, r, GAP } = DG, TAU = Math.PI * 2;

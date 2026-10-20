@@ -422,8 +422,8 @@ input[readonly]{background:var(--sunk);color:var(--ink-2)}
 .st-donut .ds{transition:opacity .15s;cursor:pointer}
 .st-donut .dl{transition:opacity .15s}
 .st-donut svg.hl .ds:not(.on),.st-donut svg.hl .dl:not(.on){opacity:.35}
-.st-donut .dn{font-size:13px;font-weight:600;fill:var(--ink)}
-.st-donut .dp{font-size:12px;fill:var(--ink-3);font-variant-numeric:tabular-nums}
+.st-donut .dn{font-size:12.5px;font-weight:600;fill:var(--ink)}
+.st-donut .dp{font-size:11.5px;fill:var(--ink-3);font-variant-numeric:tabular-nums}
 .st-donut .dc1{font-size:12px;fill:var(--ink-3)}
 .st-donut .dc2{font-size:17px;font-weight:700;fill:var(--ink);font-variant-numeric:tabular-nums}
 .st-al .tr{height:8px;border-radius:4px;background:var(--sunk);overflow:hidden}
