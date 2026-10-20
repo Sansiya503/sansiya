@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.9.3";
+const APP_VERSION = "1.9.4";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -462,7 +462,9 @@ function tagCounts(list = S.entries){
 const pendingIds = () => new Set(S.outbox.filter(o => o.op === "upsert").map(o => o.entry.id));
 
 /* ---------- render: chrome ---------- */
-const VIEWS = [["archive","아카이브"],["calendar","캘린더"],["stats","통계 · 회고"],["stocks","주식"]];
+// the calendar view (calendarHtml) is kept in the code but hidden from the menu for now;
+// put ["calendar","캘린더"] back here to bring it back
+const VIEWS = [["archive","아카이브"],["stats","통계 · 회고"],["stocks","주식"]];
 function renderChrome(){
   $("#brandCount").textContent = S.loaded ? `Personal register · ${S.entries.length}건` : "Personal register";
   $("#tabbar").innerHTML = VIEWS.map(([v, l]) => `<button type="button" data-view="${v}" aria-current="${S.view === v}">${l}</button>`).join("");
