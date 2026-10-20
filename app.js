@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.6.1";
+const APP_VERSION = "1.7.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -477,8 +477,9 @@ function refresh(){
 function rowHtml(e, pend){
   const c = catOf(e.cat), ph = e.photos || [];
   return `<article class="row" data-open="${esc(e.id)}" tabindex="0">
-    <div class="sheet"><b>${esc(e.cat)}</b>-${pad(e.seq || 0, 3)}</div>
+    ${coverHtml(e)}
     <div style="min-width:0">
+      <div class="sheet"><b>${esc(e.cat)}</b>-${pad(e.seq || 0, 3)}</div>
       <h3>${esc(e.title || "제목 없음")}</h3>
       ${e.body ? `<p class="excerpt">${esc(e.body.slice(0, 240))}</p>` : ""}
       <div class="meta">
@@ -491,8 +492,13 @@ function rowHtml(e, pend){
         ${pend && pend.has(e.id) ? `<span class="pill pend" title="인터넷에 연결되면 올라가요">동기화 대기</span>` : ""}
       </div>
     </div>
-    <div class="thumbs">${ph.length ? `<div class="thumbwrap">${imgTag(ph[0], "thumb")}</div>${ph.length > 1 ? `<span class="more">+${ph.length - 1}</span>` : ""}` : ""}</div>
   </article>`;
+}
+// left image of a list row: first photo, or a tile with the field code when there is none
+function coverHtml(e){
+  const ph = e.photos || [], c = catOf(e.cat);
+  if(ph.length) return `<div class="cover">${imgTag(ph[0])}${ph.length > 1 ? `<span class="more">+${ph.length - 1}</span>` : ""}</div>`;
+  return `<div class="cover blank" aria-hidden="true"><b>${esc(e.cat)}</b><span>${esc(c.name)}</span></div>`;
 }
 function cardHtml(e){
   const c = catOf(e.cat), ph = e.photos || [];
@@ -1534,6 +1540,11 @@ function renderEditor(){
   showOv(`<form class="sheetbox" id="edForm" role="dialog" aria-modal="true" aria-label="${OV.id ? "기록 편집" : "새 기록"}" novalidate>
     <div class="sb-head"><span class="ttl">${OV.id ? sheetNo(d) + " 편집" : "새 기록"}</span><div class="sp"><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
     <div class="sb-body">
+      <div class="fld" id="f-photos"><span class="lb">사진 <span class="req">필수</span> <span style="color:var(--ink-3);font-weight:400">· 첫 번째 사진이 목록에 보여요</span></span>
+        <div class="photos">${d.photos.map((p, i) => `<div class="p">${imgTag(p)}${i === 0 ? `<span class="first">대표</span>` : ""}<button type="button" data-rmphoto="${i}" aria-label="사진 빼기">×</button></div>`).join("")}
+          ${Array.from({ length:OV.busy }, () => `<div class="busy">올리는 중…</div>`).join("")}
+          ${canPhoto ? `<label class="add" for="f-photo"><span style="font-size:20px;line-height:1">+</span>사진 추가</label><input id="f-photo" type="file" accept="image/*" multiple hidden>` : `<span class="tag">사진은 인터넷에 연결되어 있을 때 올릴 수 있어요. 사진이 있어야 저장할 수 있어요.</span>`}
+        </div></div>
       <div class="frow">
         <div class="fld"><span class="lb">유형</span>
           <div class="seg" role="group" aria-label="유형">
@@ -1559,11 +1570,6 @@ function renderEditor(){
         <div class="tagbox">${d.tags.map((t, i) => `<button type="button" class="chip on" data-rmtag="${i}">#${esc(t)} <span class="x">×</span></button>`).join("")}
           <input id="f-tag" type="text" list="tagList" placeholder="${d.tags.length ? "" : "입력 후 Enter (예: 미니멀, 콘크리트)"}" autocomplete="off" enterkeyhint="done"></div>
         <datalist id="tagList">${allTags.map(t => `<option value="${esc(t)}">`).join("")}</datalist></div>
-      <div class="fld"><span class="lb">사진</span>
-        <div class="photos">${d.photos.map((p, i) => `<div class="p">${imgTag(p)}<button type="button" data-rmphoto="${i}" aria-label="사진 빼기">×</button></div>`).join("")}
-          ${Array.from({ length:OV.busy }, () => `<div class="busy">올리는 중…</div>`).join("")}
-          ${canPhoto ? `<label class="add" for="f-photo"><span style="font-size:20px;line-height:1">+</span>사진 추가</label><input id="f-photo" type="file" accept="image/*" multiple hidden>` : `<span class="tag">사진은 인터넷에 연결되어 있을 때 올릴 수 있어요.</span>`}
-        </div></div>
     </div>
     <div class="sb-foot"><span class="hint">${navigator.onLine || S.B.kind === "local" ? "⌘/Ctrl + Enter 저장" : "오프라인: 저장해 두면 연결될 때 올라가요"}</span>
       <button class="btn" type="button" data-act="close">취소</button>
@@ -1617,6 +1623,11 @@ async function uploadPhotos(files){
 async function saveDraft(){
   syncDraft();
   const d = OV.draft;
+  if(!d.photos.length){
+    toast(OV.busy ? "사진을 올리는 중이에요. 잠시만 기다려 주세요." : "사진을 한 장 이상 넣어 주세요.");
+    const box = $("#f-photos"); if(box){ box.classList.remove("need"); void box.offsetWidth; box.classList.add("need"); box.scrollIntoView({ block:"nearest", behavior:"smooth" }); }
+    return;
+  }
   if(!d.title.trim()){ toast("제목을 적어 주세요."); const t = $("#f-title"); if(t) t.focus(); return; }
   if(d.url && !/^https?:\/\//i.test(d.url)) d.url = "https://" + d.url;
   const pend = ($("#f-tag") || {}).value; if(pend) addTag(pend);
