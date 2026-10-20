@@ -50,7 +50,7 @@ button{cursor:pointer}
 
 /* header */
 .top{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line);padding-top:env(safe-area-inset-top,0px)}
-.top .wrap{display:flex;align-items:center;gap:14px;padding-block:14px;flex-wrap:wrap}
+.top-row{display:flex;align-items:center;gap:14px;padding-block:14px;flex-wrap:wrap}
 .brand{display:flex;align-items:center;gap:10px;margin-right:auto;min-width:0}
 .brand svg{width:30px;height:30px;flex:none;border-radius:7px}
 .brand .bt{display:flex;flex-direction:column;line-height:1.15;min-width:0}
@@ -84,10 +84,14 @@ kbd{font-family:var(--f-mono);font-size:11px;color:var(--ink-3);border:1px solid
 .sync[data-s="error"] i{background:var(--danger)}
 @keyframes pulse{to{opacity:.3}}
 
-/* tabbar (mobile) */
-.tabbar{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;width:100%;padding-block:2px 0}
+/* menu row: its own line under the header line, still pinned with the header */
+.menubar{border-top:1px solid var(--line)}
+.menubar .wrap{padding-block:8px}
+.tabbar{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;width:100%}
 .tabbar::-webkit-scrollbar{display:none}
-.tabbar button{border:0;background:transparent;padding:6px 12px;border-radius:999px;color:var(--ink-2);font-weight:500;white-space:nowrap}
+.tabbar button{border:0;background:transparent;padding:6px 14px;border-radius:999px;color:var(--ink-2);font-weight:500;white-space:nowrap}
+.tabbar button:hover{color:var(--ink);background:var(--sunk)}
+.tabbar button[aria-current="true"]:hover{background:var(--accent);color:var(--accent-ink)}
 .tabbar button[aria-current="true"]{background:var(--accent);color:var(--accent-ink)}
 
 /* shell */
@@ -126,10 +130,6 @@ select.sel{height:32px;border:1px solid var(--line-2);border-radius:var(--r);bac
 body:has(.tagbar) .shell{padding-bottom:calc(110px + env(safe-area-inset-bottom,0px))}
 body:has(.tagbar) .toast{bottom:calc(70px + env(safe-area-inset-bottom,0px))}
 .mt-l{font-family:var(--f-mono);font-size:11px;letter-spacing:.1em;color:var(--ink-3);margin-right:2px}
-@media (min-width:1101px){
-  .brand{order:-2;margin-right:18px}
-  .tabbar{order:-1;width:auto;margin-right:auto;padding-block:0}
-}
 
 .banner{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px dashed var(--line-2);border-radius:var(--r);padding:10px 14px;margin-bottom:18px;font-size:13.5px;color:var(--ink-2)}
 .banner b{color:var(--ink);font-weight:600}
@@ -304,14 +304,14 @@ img[data-path]:not([src]){visibility:hidden}
 
 .toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:13.5px;z-index:80;box-shadow:0 8px 24px rgba(0,0,0,.2);max-width:calc(100vw - 32px)}
 
-@media (max-width:980px){ .stgrid{grid-template-columns:1fr} }
+@media (max-width:980px){ .stgrid{grid-template-columns:minmax(0,1fr)} }
 @media (max-width:860px){
   .shell{padding-block:16px 80px}
-  .tabbar{padding-block:0 2px}
+  .menubar .wrap{padding-block:6px}
   .mfilters{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}
   .mfilters::-webkit-scrollbar{display:none}
   .mt-l{flex:none}
-  .top .wrap{gap:10px;padding-block:10px 8px}
+  .top-row{gap:10px;padding-block:10px}
   .search{order:3;flex-basis:100%;max-width:none}
   .search kbd,.btn.primary kbd{display:none}
   .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -321,6 +321,7 @@ img[data-path]:not([src]){visibility:hidden}
 }
 @media (max-width:560px){
   .brand small{display:none}
+  .chart svg{min-width:0}
   .btn.primary.new{padding:0 12px}
   .sync span{display:none}
   .sync{padding:0 9px}
