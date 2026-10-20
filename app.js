@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.8.1";
+const APP_VERSION = "1.9.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -475,7 +475,7 @@ function render(){
   const m = $("#main");
   if(S.view === "archive") m.innerHTML = archiveHtml();
   else if(S.view === "calendar") m.innerHTML = calendarHtml();
-  else if(S.view === "stocks"){ m.innerHTML = stocksHtml(); bindTips(m); }
+  else if(S.view === "stocks"){ m.innerHTML = stocksHtml(); bindTips(m); bindDonut(m); }
   else m.innerHTML = statsHtml();
   hydrateImages();
 }
@@ -653,9 +653,9 @@ const codeOf = sym => String(sym || "").replace(/\.(KS|KQ)$/, "");
 const exchLabel = s => s.market === "KR" ? (/\.KQ$/.test(s.symbol) ? "코스닥" : "코스피") : "미국";
 const parseNum = v => { const n = parseFloat(String(v ?? "").replace(/[,\s원$₩주]/g, "")); return isFinite(n) ? n : null; };
 // company logos, trimmed to their content so the mark fills the circle.
-// Financial Modeling Prep logos are analysed on a canvas (background, coloured symbol vs. wordmark);
+// Financial Modeling Prep logos are redrawn on a canvas as Toss-style tiles (see fitLogo);
 // Parqet is a plain fallback; otherwise the initial letter stays.
-const LOGO_V = 2;
+const LOGO_V = 3;
 const FMP_LOGO = sym => `https://financialmodelingprep.com/image-stock/${encodeURIComponent(sym)}.png`;
 const PARQET_LOGO = sym => `https://assets.parqet.com/logos/symbol/${encodeURIComponent(sym)}?format=png`;
 let LOGOS = {};   // sym -> { u, bg } | { raw:url } | "none"
@@ -687,7 +687,8 @@ async function runLogoQueue(){
     if(LOGOS[sym] !== undefined){ paintLogo(sym); continue; }
     if(navigator.onLine === false){ logoQueue.length = 0; break; }
     let res = null;
-    try{ res = await fitLogo(FMP_LOGO(sym)); }catch(e){ res = null; }
+    const st = S.stocks.find(x => x.symbol === sym);
+    try{ res = await fitLogo(FMP_LOGO(sym), st ? st.name : sym); }catch(e){ res = null; }
     if(!res) res = (await probeRaw(PARQET_LOGO(sym))) ? { raw:PARQET_LOGO(sym) } : "none";
     LOGOS[sym] = res; paintLogo(sym);
     clearTimeout(logoSaveT); logoSaveT = setTimeout(() => KV.set("logos-v" + LOGO_V, LOGOS), 400);
@@ -702,7 +703,10 @@ function paintLogo(sym){
   const sel = `.st-ava[data-logo="${window.CSS && CSS.escape ? CSS.escape(sym) : sym}"]`;
   document.querySelectorAll(sel).forEach(el => { el.querySelectorAll(".st-logo").forEach(i => i.remove()); el.insertAdjacentHTML("beforeend", logoImg(sym)); });
 }
-async function fitLogo(url){
+// Toss-style tiles: a one-colour mark becomes a white mark on a circle of its brand colour,
+// a mark drawn inside a coloured plate uses the plate as the circle, multi-colour marks stay on white,
+// and pure wordmarks become the first letter of the stock name.
+async function fitLogo(url, label){
   const r = await fetch(url, { mode:"cors", cache:"force-cache" });
   if(!r.ok) return null;
   const blob = await r.blob();
@@ -714,38 +718,159 @@ async function fitLogo(url){
   const d = g.getImageData(0, 0, w, h).data;
   const px = (x, y) => { const i = (y * w + x) * 4; return [d[i], d[i + 1], d[i + 2], d[i + 3]]; };
   const corners = [px(0, 0), px(w - 1, 0), px(0, h - 1), px(w - 1, h - 1)];
-  let bg = null; // null = transparent background
+  let bg = null;
   if(corners.every(c => c[3] > 200)){
     const avg = [0, 1, 2].map(k => Math.round(corners.reduce((a, c) => a + c[k], 0) / 4));
     if(corners.every(c => Math.abs(c[0] - avg[0]) + Math.abs(c[1] - avg[1]) + Math.abs(c[2] - avg[2]) < 40)) bg = avg;
   }
+  const lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const bgWhite = !bg || lum(bg[0], bg[1], bg[2]) > 225;
+  // how much a pixel belongs to the mark (0..1)
+  const ink = i => {
+    const a = d[i + 3] / 255; if(a < 0.12) return 0;
+    if(!bg){
+      const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
+      if(mx - mn < 30 && mn > 200) return a * Math.max(0, 1 - (mn - 200) / 40);
+      return a;
+    }
+    const dist = Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]);
+    return Math.max(0, Math.min(1, (dist - 30) / 150)) * a;
+  };
   const A = { x0:w, y0:h, x1:-1, y1:-1, n:0 }, C = { x0:w, y0:h, x1:-1, y1:-1, n:0 };
   const add = (B, x, y) => { if(x < B.x0) B.x0 = x; if(y < B.y0) B.y0 = y; if(x > B.x1) B.x1 = x; if(y > B.y1) B.y1 = y; B.n++; };
   for(let y = 0; y < h; y++) for(let x = 0; x < w; x++){
-    const i = (y * w + x) * 4, rr = d[i], gg = d[i + 1], bb = d[i + 2], a = d[i + 3];
-    if(a < 40 || (bg && Math.abs(rr - bg[0]) + Math.abs(gg - bg[1]) + Math.abs(bb - bg[2]) < 60)) continue;
+    const i = (y * w + x) * 4;
+    if(ink(i) < 0.35) continue;
     add(A, x, y);
-    if(Math.max(rr, gg, bb) - Math.min(rr, gg, bb) > 70) add(C, x, y);
+    if(Math.max(d[i], d[i + 1], d[i + 2]) - Math.min(d[i], d[i + 1], d[i + 2]) > 70) add(C, x, y);
   }
   if(A.n < 20) return null;
-  let box = A;
-  // coloured symbol next to a grey/black wordmark: keep only the symbol
   const area = B => (B.x1 - B.x0 + 1) * (B.y1 - B.y0 + 1);
+  let box = A;
   if(C.n > 30 && C.n / A.n >= 0.25 && C.n / A.n < 0.85 && area(C) / area(A) < 0.6) box = C;
   const bw = box.x1 - box.x0 + 1, bh = box.y1 - box.y0 + 1;
-  const fullBleed = !bg && box.x0 <= 2 && box.y0 <= 2 && box.x1 >= w - 3 && box.y1 >= h - 3;
-  const side = Math.max(bw, bh) * (fullBleed ? 1 : 1.32);
+  // colours inside the chosen box
+  const bins = new Array(12).fill(0), binRGB = Array.from({ length:12 }, () => [0, 0, 0]);
+  let inkW = 0, chromW = 0, darkW = 0, darkRGB = [0, 0, 0], lightW = 0;
+  for(let y = box.y0; y <= box.y1; y++) for(let x = box.x0; x <= box.x1; x++){
+    const i = (y * w + x) * 4, k = ink(i); if(k < 0.5) continue;
+    const R = d[i], G = d[i + 1], B = d[i + 2], mx = Math.max(R, G, B), mn = Math.min(R, G, B), L = lum(R, G, B);
+    inkW += k;
+    if(mx - mn > 60){
+      let hue; const c = mx - mn;
+      if(mx === R) hue = ((G - B) / c + 6) % 6; else if(mx === G) hue = (B - R) / c + 2; else hue = (R - G) / c + 4;
+      const bi = Math.floor(hue * 2) % 12;
+      bins[bi] += k; binRGB[bi][0] += R * k; binRGB[bi][1] += G * k; binRGB[bi][2] += B * k; chromW += k;
+    } else if(L < 110){ darkW += k; darkRGB[0] += R * k; darkRGB[1] += G * k; darkRGB[2] += B * k; }
+    else if(L > 200) lightW += k;
+  }
+  // merge neighbouring hue bins into clusters
+  const order = bins.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]);
+  const used = new Set(), clusters = [];
+  for(const [v, i] of order){
+    if(!v || used.has(i)) continue;
+    let tot = 0, rgb = [0, 0, 0];
+    for(const j of [i, (i + 1) % 12, (i + 11) % 12]) if(!used.has(j)){ used.add(j); tot += bins[j]; rgb = rgb.map((c, q) => c + binRGB[j][q]); }
+    clusters.push({ w:tot, rgb:rgb.map(c => Math.round(c / tot)) });
+  }
+  const big = clusters.filter(c => c.w > 0.12 * Math.max(chromW, 1) && c.w > 0.06 * inkW);
+  let mode, fill, markWhite = true;
+  // a mark drawn as white details inside a coloured plate (a disc or a box): the plate colour fills the circle
+  // and the inner white details become the mark
+  let hole = null;
+  if(bgWhite && bw > 8 && bh > 8){
+    const n = bw * bh, inside = new Uint8Array(n);
+    let inkN = 0;
+    for(let y = 0; y < bh; y++) for(let x = 0; x < bw; x++){ if(ink(((y + box.y0) * w + (x + box.x0)) * 4) >= 0.5){ inside[y * bw + x] = 1; inkN++; } }
+    const cx = (bw - 1) / 2, cy = (bh - 1) / 2, rx = bw / 2, ry = bh / 2;
+    const inE = (x, y, k) => ((x - cx) / (rx * k)) ** 2 + ((y - cy) / (ry * k)) ** 2 <= 1;
+    let eN = 0, eInk = 0, oInk = 0;
+    for(let y = 0; y < bh; y++) for(let x = 0; x < bw; x++){ if(inE(x, y, 1)){ eN++; eInk += inside[y * bw + x]; } else oInk += inside[y * bw + x]; }
+    // a plate has an (almost) unbroken edge: check a thin band along the box edge or the disc rim
+    const band = test => { let t = 0, k = 0; for(let y = 0; y < bh; y++) for(let x = 0; x < bw; x++) if(test(x, y)){ t++; k += inside[y * bw + x]; } return t ? k / t : 0; };
+    let region = null;
+    const sides = [band((x, y) => y >= 1 && y < 4), band((x, y) => y >= bh - 4 && y < bh - 1), band((x, y) => x >= 1 && x < 4), band((x, y) => x >= bw - 4 && x < bw - 1)];
+    if(inkN / n > 0.72 && Math.min(...sides) > 0.75)
+      region = (x, y) => x >= 2 && y >= 2 && x < bw - 2 && y < bh - 2;
+    else if(bw / bh > 0.8 && bw / bh < 1.25 && eInk / eN > 0.7 && oInk / Math.max(1, n - eN) < 0.2 && band((x, y) => inE(x, y, 0.96) && !inE(x, y, 0.84)) > 0.9)
+      region = (x, y) => inE(x, y, 0.93);
+    if(region){
+      const outside = new Uint8Array(n), H = { x0:bw, y0:bh, x1:-1, y1:-1, n:0 };
+      let rN = 0;
+      for(let y = 0; y < bh; y++) for(let x = 0; x < bw; x++){
+        const j = y * bw + x;
+        if(!region(x, y)){ outside[j] = 1; continue; }
+        rN++;
+        if(!inside[j]) add(H, x, y);
+      }
+      if(H.n > 0.02 * rN){
+        const seen = new Uint8Array(n); let pieces = 0;
+        for(let j0 = 0; j0 < n; j0++){
+          if(outside[j0] || inside[j0] || seen[j0]) continue;
+          let size = 0; const st = [j0]; seen[j0] = 1;
+          while(st.length){ const j = st.pop(), x = j % bw, y = (j / bw) | 0; size++;
+            for(const [nx, ny] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]){
+              if(nx < 0 || ny < 0 || nx >= bw || ny >= bh) continue;
+              const k = ny * bw + nx; if(!outside[k] && !inside[k] && !seen[k]){ seen[k] = 1; st.push(k); } } }
+          if(size > 3) pieces++;
+        }
+        hole = { outside, H, pieces };
+      }
+    }
+  }
+  const markBox = hole ? { x0:box.x0 + hole.H.x0, y0:box.y0 + hole.H.y0, x1:box.x0 + hole.H.x1, y1:box.y0 + hole.H.y1 } : box;
+  const mbw = markBox.x1 - markBox.x0 + 1, mbh = markBox.y1 - markBox.y0 + 1;
+  const lettering = hole && hole.pieces >= 6 && mbw / mbh > 1.5;
+  const wordmark = (mbw / mbh > 2.4 && (box === A || !!hole)) || lettering;
+  if(!bgWhite){ mode = "bg"; fill = bg; markWhite = false; }
+  else if(big.length >= 2 && chromW > 0.35 * inkW){ mode = "multi"; fill = [255, 255, 255]; markWhite = false; }
+  else if(chromW > 0.3 * inkW && big.length){ mode = "mono"; fill = big[0].rgb; }
+  else if(darkW > 0){ mode = "mono"; fill = darkRGB.map(c => Math.round(c / darkW)); }
+  else { mode = "multi"; fill = [255, 255, 255]; markWhite = false; }
+  if(hole && mode === "mono") mode = "plate";
+  if(wordmark && mode !== "multi") mode = "letter";
+  // very light brand colours keep a dark mark
+  const fillL = lum(fill[0], fill[1], fill[2]);
+  const markColor = fillL > 190 ? [26, 26, 26] : [255, 255, 255];
+
   const N = 128, out = document.createElement("canvas"); out.width = out.height = N;
   const o = out.getContext("2d");
-  const bgCss = bg ? `rgb(${bg[0]},${bg[1]},${bg[2]})` : "#ffffff";
-  o.fillStyle = bgCss; o.fillRect(0, 0, N, N);
+  o.fillStyle = `rgb(${fill.join(",")})`; o.fillRect(0, 0, N, N);
   o.imageSmoothingQuality = "high";
-  // copy only the chosen box (+1px for anti-aliasing) so a wordmark beside or under the symbol never shows
-  const sx = Math.max(0, box.x0 - 1), sy = Math.max(0, box.y0 - 1);
-  const sw = Math.min(w, box.x1 + 2) - sx, sh = Math.min(h, box.y1 + 2) - sy;
-  const k = N / side, cx = box.x0 + bw / 2, cy = box.y0 + bh / 2;
-  o.drawImage(cv, sx, sy, sw, sh, N / 2 - (cx - sx) * k, N / 2 - (cy - sy) * k, sw * k, sh * k);
-  return { u:out.toDataURL("image/png"), bg:bgCss };
+  if(mode === "letter"){
+    const ch = (String(label || "?").match(/[가-힣A-Za-z0-9]/) || ["?"])[0].toUpperCase();
+    o.fillStyle = `rgb(${markColor.join(",")})`;
+    o.font = `700 ${/[가-힣]/.test(ch) ? 58 : 64}px "Pretendard","Apple SD Gothic Neo","Malgun Gothic","Segoe UI",sans-serif`;
+    o.textAlign = "center"; o.textBaseline = "middle"; o.fillText(ch, N / 2, N / 2 + 3);
+  } else {
+    // mark size: about 58% of the circle, wide marks up to 68% wide
+    const sc = Math.min((N * 0.68) / mbw, (N * 0.58) / mbh, (N * 0.62) / Math.sqrt(mbw * mbh));
+    const dw = mbw * sc, dh = mbh * sc, dx = (N - dw) / 2, dy = (N - dh) / 2;
+    if(mode === "plate"){
+      const m = document.createElement("canvas"); m.width = mbw; m.height = mbh;
+      const mg = m.getContext("2d"), md = mg.createImageData(mbw, mbh);
+      for(let y = 0; y < mbh; y++) for(let x = 0; x < mbw; x++){
+        const gx = x + markBox.x0, gy = y + markBox.y0, j = (y * mbw + x) * 4;
+        md.data[j] = markColor[0]; md.data[j + 1] = markColor[1]; md.data[j + 2] = markColor[2];
+        md.data[j + 3] = hole.outside[(gy - box.y0) * bw + (gx - box.x0)] ? 0 : Math.round((1 - ink((gy * w + gx) * 4)) * 255);
+      }
+      mg.putImageData(md, 0, 0);
+      o.drawImage(m, 0, 0, mbw, mbh, dx, dy, dw, dh);
+    } else if(markWhite && mode !== "bg"){
+      const m = document.createElement("canvas"); m.width = bw; m.height = bh;
+      const mg = m.getContext("2d"), md = mg.createImageData(bw, bh);
+      for(let y = 0; y < bh; y++) for(let x = 0; x < bw; x++){
+        const i = ((y + box.y0) * w + (x + box.x0)) * 4, j = (y * bw + x) * 4;
+        md.data[j] = markColor[0]; md.data[j + 1] = markColor[1]; md.data[j + 2] = markColor[2];
+        md.data[j + 3] = Math.round(ink(i) * 255);
+      }
+      mg.putImageData(md, 0, 0);
+      o.drawImage(m, 0, 0, bw, bh, dx, dy, dw, dh);
+    } else {
+      o.drawImage(cv, box.x0, box.y0, bw, bh, dx, dy, dw, dh);
+    }
+  }
+  return { u:out.toDataURL("image/png"), bg:`rgb(${fill.join(",")})`, mode };
 }
 // raw (fallback) logos: show once loaded, drop on error so the initial letter shows
 document.addEventListener("load", ev => { const t = ev.target; if(t && t.classList && t.classList.contains("st-logo")) t.classList.add("ok"); }, true);
@@ -919,10 +1044,18 @@ const MARKET = [
   ["^IXIC", "나스닥", "NASDAQ Composite", "나스닥 거래소에 상장된 3,000여 종목으로 만든 지수예요. 기술주 비중이 높아요."],
   ["^GSPC", "S&P 500", "S&P 500 Index", "미국 대형주 500개로 만든 미국 시장의 대표 지수예요."],
   ["^DJI", "다우존스", "Dow Jones Industrial Average", "미국 대표 우량주 30개로 만든 가장 오래된 지수예요."],
-  ["^SOX", "필라델피아 반도체", "PHLX Semiconductor Index", "엔비디아·브로드컴 같은 미국 반도체 기업 30개로 만든 지수예요."],
-  ["KRW=X", "달러 환율", "USD/KRW", "1달러를 사는 데 드는 원화예요. 환율이 오르면 미국 주식의 원화 평가금도 커져요."]
+  ["KRW=X", "달러 환율", "USD/KRW", "1달러를 사는 데 드는 원화예요. 환율이 오르면 미국 주식의 원화 평가금도 커져요."],
+  ["JPYKRW=X", "엔화 환율", "JPY/KRW · 100엔 기준", "100엔을 사는 데 드는 원화예요. 일본 여행이나 엔화 자산을 볼 때 참고해요.", 100],
+  ["EURKRW=X", "유로 환율", "EUR/KRW", "1유로를 사는 데 드는 원화예요. 유럽 여행이나 유로 자산을 볼 때 참고해요."]
 ];
-const mkCur = sym => sym === "KRW=X" ? "FX" : "PT";
+const mkCur = sym => /=X$/.test(sym) ? "FX" : "PT";
+const mkScale = sym => (MARKET.find(m => m[0] === sym) || [])[4] || 1;
+// market row with the display scale applied (yen is shown per 100 yen)
+function mkRow(sym){
+  const m = S.market[sym]; if(!m) return null;
+  const k = mkScale(sym), x = v => num(v) ? v * k : v;
+  return { ...m, price:x(m.price), change:x(m.change), prevClose:x(m.prevClose), spark:(m.spark || []).map(x) };
+}
 function sparkSvg(vals, base, tn){
   if(!vals || vals.length < 2) return `<svg class="mk-sp" viewBox="0 0 100 26" aria-hidden="true"></svg>`;
   const all = num(base) ? vals.concat(base) : vals;
@@ -935,7 +1068,7 @@ function sparkSvg(vals, base, tn){
 }
 function marketHtml(){
   return `<div class="mk-row" role="list" aria-label="미국 지수와 달러 환율">${MARKET.map(([sym, name]) => {
-    const m = S.market[sym], cur = mkCur(sym), tn = tone(m && m.change);
+    const m = mkRow(sym), cur = mkCur(sym), tn = tone(m && m.change);
     return `<button type="button" class="mk" role="listitem" data-index="${esc(sym)}">
       <span class="mk-n">${esc(name)}</span>
       <b class="mk-v">${m ? fmtMoney(m.price, cur) : "-"}</b>
@@ -946,7 +1079,7 @@ function marketHtml(){
 function ovSubject(){
   if(!OV) return null;
   if(OV.kind === "stock") return S.stocks.find(x => x.id === OV.id) || null;
-  if(OV.kind === "index"){ const m = MARKET.find(x => x[0] === OV.sym); return m ? { id:m[0], symbol:m[0], name:m[1], currency:mkCur(m[0]) } : null; }
+  if(OV.kind === "index"){ const m = MARKET.find(x => x[0] === OV.sym); return m ? { id:m[0], symbol:m[0], name:m[1], currency:mkCur(m[0]), scale:m[4] || 1 } : null; }
   return null;
 }
 function openIndex(sym){
@@ -956,7 +1089,7 @@ function openIndex(sym){
   renderIndexDetail(); loadHistory();
 }
 function indexPriceHtml(s){
-  const m = S.market[s.symbol], cur = s.currency;
+  const m = mkRow(s.symbol), cur = s.currency;
   const t = m && m.time ? fmtTime(m.time * 1000) : "";
   return `<div class="st-big">${m ? fmtMoney(m.price, cur) : "-"}</div>
     <div class="st-chg ${tone(m && m.change)}"><span class="st-muted0">어제보다</span> ${m && num(m.change) ? `${fmtMoney(m.change, cur, true)} (${fmtPct(m.changePct)})` : "시세 없음"}</div>
@@ -979,6 +1112,77 @@ function renderIndexDetail(){
     </div>
   </div>`);
   bindChart();
+}
+
+/* ---------- stocks: allocation donut ---------- */
+// one orange ramp, deepest for the biggest holding; everything past the 6th folds into "기타"
+const DONUT = ["#B85F00", "#E68A00", "#FFA500", "#FFBF5E", "#FFD48A", "#FFE4B3", "#FFF1D9"];
+function allocSlices(P){
+  const rows = P.rows.map(({ s, p }) => ({ name:s.name, v:p.valueKRW || 0, ids:[s.id] })).filter(r => r.v > 0);
+  let sl = rows;
+  if(rows.length > 7){
+    const rest = rows.slice(6);
+    sl = [...rows.slice(0, 6), { name:`기타 ${rest.length}종목`, v:rest.reduce((a, r) => a + r.v, 0), ids:rest.flatMap(r => r.ids), other:true }];
+  }
+  const tot = sl.reduce((a, r) => a + r.v, 0) || 1;
+  sl.forEach((r, i) => { r.pct = r.v / tot * 100; r.color = r.other ? "var(--donut-other)" : DONUT[i]; });
+  return sl;
+}
+function donutSvg(P, sl){
+  if(!sl.length) return "";
+  const W = 440, H = 290, cx = 220, cy = 145, R = 96, r = 54, GAP = 38;
+  const pt = (rad, a) => [cx + rad * Math.sin(a), cy - rad * Math.cos(a)];
+  const f = n => n.toFixed(1);
+  let a0 = 0;
+  const slices = sl.map((x, i) => {
+    const a1 = a0 + x.pct / 100 * Math.PI * 2, mid = (a0 + a1) / 2, large = a1 - a0 > Math.PI ? 1 : 0;
+    let d;
+    if(sl.length === 1){
+      d = `M${f(cx)} ${f(cy - R)}A${R} ${R} 0 1 1 ${f(cx - 0.01)} ${f(cy - R)}ZM${f(cx)} ${f(cy - r)}A${r} ${r} 0 1 0 ${f(cx + 0.01)} ${f(cy - r)}Z`;
+    }else{
+      const [x0, y0] = pt(R, a0), [x1, y1] = pt(R, a1), [x2, y2] = pt(r, a1), [x3, y3] = pt(r, a0);
+      d = `M${f(x0)} ${f(y0)}A${R} ${R} 0 ${large} 1 ${f(x1)} ${f(y1)}L${f(x2)} ${f(y2)}A${r} ${r} 0 ${large} 0 ${f(x3)} ${f(y3)}Z`;
+    }
+    a0 = a1;
+    return { ...x, i, d, mid, side:Math.sin(mid) >= 0 ? 1 : -1, dot:pt((R + r) / 2, mid), elbow:pt(R + 10, mid) };
+  });
+  // keep labels on each side at least GAP apart and inside the picture
+  for(const side of [1, -1]){
+    const L = slices.filter(x => x.side === side).sort((a, b) => a.elbow[1] - b.elbow[1]);
+    let y = -1e9; L.forEach(x => { x.y = Math.max(x.elbow[1], y + GAP); y = x.y; });
+    const over = L.length ? L[L.length - 1].y - (H - 26) : 0;
+    if(over > 0){ L.forEach(x => { x.y -= over; }); y = -1e9; L.forEach(x => { x.y = Math.max(x.y, y + GAP, 22); y = x.y; }); }
+  }
+  const short = t => t.length > 9 ? t.slice(0, 8) + "…" : t;
+  const labels = slices.map(x => {
+    const ex = x.side > 0 ? W - 4 : 4, bx = cx + x.side * (R + 26);
+    return `<g class="dl" data-slice="${x.i}"><polyline points="${f(x.dot[0])},${f(x.dot[1])} ${f(x.elbow[0])},${f(x.elbow[1])} ${f(bx)},${f(x.y)} ${ex},${f(x.y)}" fill="none" stroke="var(--ink-2)" stroke-width="1"/>
+      <circle cx="${f(x.dot[0])}" cy="${f(x.dot[1])}" r="2.6" fill="var(--ink)"/>
+      <text x="${ex}" y="${f(x.y - 6)}" text-anchor="${x.side > 0 ? "end" : "start"}" class="dn">${esc(short(x.name))}</text>
+      <text x="${ex}" y="${f(x.y + 15)}" text-anchor="${x.side > 0 ? "end" : "start"}" class="dp">${x.pct.toFixed(1)}%</text></g>`;
+  }).join("");
+  const summary = sl.map(x => `${x.name} ${x.pct.toFixed(1)}%`).join(", ");
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="종목 비중: ${esc(summary)}">
+    ${slices.map(x => `<path class="ds" data-slice="${x.i}" d="${x.d}" fill="${x.color}" stroke="var(--bg)" stroke-width="2" stroke-linejoin="round"/>`).join("")}
+    ${labels}
+    <text x="${cx}" y="${cy - 4}" text-anchor="middle" class="dc1" id="dcTop">보유 ${P.rows.length}종목</text>
+    <text x="${cx}" y="${cy + 16}" text-anchor="middle" class="dc2" id="dcBig">${esc(S.hideAmt ? "••••원" : fmtShort(P.value) + "원")}</text>
+  </svg>`;
+}
+function bindDonut(root){
+  const box = root && root.querySelector("#stDonut"); if(!box) return;
+  const svg = box.querySelector("svg"), P = portfolio(), sl = allocSlices(P);
+  const top = svg.querySelector("#dcTop"), big = svg.querySelector("#dcBig");
+  const reset = () => { svg.classList.remove("hl"); svg.querySelectorAll(".on").forEach(e => e.classList.remove("on"));
+    top.textContent = `보유 ${P.rows.length}종목`; big.textContent = S.hideAmt ? "••••원" : fmtShort(P.value) + "원"; };
+  const show = i => { const x = sl[i]; if(!x) return; reset(); svg.classList.add("hl");
+    svg.querySelectorAll(`[data-slice="${i}"]`).forEach(e => e.classList.add("on"));
+    top.textContent = x.name.length > 8 ? x.name.slice(0, 7) + "…" : x.name; big.textContent = x.pct.toFixed(1) + "%"; };
+  svg.querySelectorAll("[data-slice]").forEach(e => {
+    e.addEventListener("pointerenter", () => show(+e.dataset.slice));
+    e.addEventListener("pointerdown", () => show(+e.dataset.slice));
+  });
+  svg.addEventListener("pointerleave", reset);
 }
 
 /* ---------- stocks: main view ---------- */
@@ -1047,10 +1251,14 @@ function holdHtml(){
   const list = `<section class="st-sec">
     <div class="st-sec-h"><h3>보유 종목<span>${P.rows.length}</span></h3><button class="btn small" type="button" data-act="stAdd">+ 종목 추가</button></div>
     ${ctrl}<div class="st-list">${body}</div>${hidHtml}</section>`;
+  const sl = allocSlices(P), colorOf = id => (sl.find(x => x.ids.includes(id)) || {}).color || "var(--donut-other)";
   const alloc = P.rows.length > 1 && P.value > 0 ? `<section class="st-sec">
     <div class="st-sec-h"><h3>종목 비중</h3></div>
-    <div class="st-alloc">${P.rows.map(({ s, p }) => { const pct = (p.valueKRW || 0) / P.value * 100;
-      return `<div class="st-al"><span class="nm">${esc(s.name)}</span><span class="tr"><span class="fl" style="width:${Math.max(0, Math.min(100, pct)).toFixed(1)}%"></span></span><span class="pc">${pct.toFixed(1)}%</span></div>`; }).join("")}</div>
+    <div class="st-allocwrap">
+      <div class="st-alloc">${P.rows.map(({ s, p }) => { const pct = (p.valueKRW || 0) / P.value * 100;
+        return `<div class="st-al"><span class="nm"><i style="background:${colorOf(s.id)}"></i>${esc(s.name)}</span><span class="tr"><span class="fl" style="width:${Math.max(0, Math.min(100, pct)).toFixed(1)}%"></span></span><span class="pc">${pct.toFixed(1)}%</span></div>`; }).join("")}</div>
+      <div class="st-donut" id="stDonut">${donutSvg(P, sl)}</div>
+    </div>
   </section>` : "";
   return hero + list + alloc;
 }
@@ -1256,7 +1464,8 @@ async function loadHistory(){
   try{
     if(!navigator.onLine) throw new TypeError("Failed to fetch");
     const d = await S.B.invoke({ action:"history", symbol:s.symbol, range:OV.range });
-    S.hist[key] = { at:Date.now(), points:d.points || [], prevClose:d.prevClose ?? null };
+    const k = s.scale || 1;
+    S.hist[key] = { at:Date.now(), points:(d.points || []).map(([t, v]) => [t, v * k]), prevClose:num(d.prevClose) ? d.prevClose * k : null };
   }catch(e){
     S.hist[key] = { at:Date.now(), err: isNetErr(e) ? "인터넷에 연결되면 차트를 볼 수 있어요." : "차트를 불러오지 못했어요." };
   }
