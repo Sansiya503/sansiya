@@ -1,6 +1,7 @@
 // 산시야 주가 조회 함수 (Supabase Edge Function: "quotes")
 // - 주가·환율: Yahoo Finance 차트 데이터 (비공식, 한국 주식은 약 20분 지연)
 // - 한국 종목 이름 검색: aikstockdata.com (전 영업일 확정 종가, 비상업적 이용·출처 표시)
+// - 비트코인 블록·수수료: mempool.space 공개 API (25초 캐시)
 // 로그인한 산시야 사용자만 호출할 수 있어요.
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
@@ -201,6 +202,36 @@ async function marketRow(symbol: string) {
   return { symbol, price: q.price, prevClose: q.prevClose, change: q.change, changePct: q.changePct, time: q.time, spark };
 }
 
+// ---------- bitcoin blocks & fees (mempool.space), cached for 25 s ----------
+let mpCache: { at: number; data: unknown } | null = null;
+type MpBlock = { height: number; timestamp: number; size: number; tx_count: number; extras?: { pool?: { name?: string }; medianFee?: number } };
+type MpFees = { fastestFee: number; halfHourFee: number; hourFee: number; economyFee: number; minimumFee: number };
+type MpProjected = { blockVSize: number; nTx: number; medianFee: number; feeRange?: number[] };
+async function mempool() {
+  if (mpCache && Date.now() - mpCache.at < 25_000) return mpCache.data;
+  const base = "https://mempool.space/api";
+  const [blocks, fees, projected] = await Promise.all([
+    getJson(`${base}/v1/blocks`) as Promise<MpBlock[]>,
+    (getJson(`${base}/v1/fees/precise`).catch(() => getJson(`${base}/v1/fees/recommended`))) as Promise<MpFees>,
+    (getJson(`${base}/v1/fees/mempool-blocks`).catch(() => [])) as Promise<MpProjected[]>,
+  ]);
+  if (!Array.isArray(blocks) || !blocks.length) throw new Error("no blocks");
+  const pr = Array.isArray(projected) ? projected : [];
+  const data = {
+    blocks: blocks.slice(0, 15).map((b) => ({ height: b.height, ts: b.timestamp, size: b.size, tx: b.tx_count, pool: b.extras?.pool?.name || "", fee: b.extras?.medianFee ?? null })),
+    fees: { eco: fees?.economyFee ?? null, low: fees?.hourFee ?? null, mid: fees?.halfHourFee ?? null, high: fees?.fastestFee ?? null, min: fees?.minimumFee ?? null },
+    pending: pr.length ? {
+      vsize: pr.reduce((a, m) => a + (m.blockVSize || 0), 0),
+      count: pr.reduce((a, m) => a + (m.nTx || 0), 0),
+      next: { median: pr[0].medianFee, n: pr[0].nTx, vsize: pr[0].blockVSize, range: pr[0].feeRange || [] },
+    } : null,
+    src: "mempool.space",
+    at: Date.now(),
+  };
+  mpCache = { at: Date.now(), data };
+  return data;
+}
+
 async function requireUser(req: Request) {
   const auth = req.headers.get("authorization") || "";
   const apikey = req.headers.get("apikey") || "";
@@ -242,6 +273,7 @@ Deno.serve(async (req) => {
       if (!/^[A-Za-z0-9.\-^=]{1,20}$/.test(s)) return json({ error: "bad symbol" }, 400);
       return json(await history(s, String(body.range || "3mo")));
     }
+    if (action === "mempool") return json(await mempool());
     return json({ error: "unknown action" }, 400);
   } catch (e) {
     return json({ error: String((e as Error)?.message || e) }, 500);

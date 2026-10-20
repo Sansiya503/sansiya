@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.10.1";
+const APP_VERSION = "1.11.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -464,7 +464,7 @@ const pendingIds = () => new Set(S.outbox.filter(o => o.op === "upsert").map(o =
 /* ---------- render: chrome ---------- */
 // the calendar view (calendarHtml) is kept in the code but hidden from the menu for now;
 // put ["calendar","캘린더"] back here to bring it back
-const VIEWS = [["archive","아카이브"],["stats","통계 · 회고"],["stocks","주식"]];
+const VIEWS = [["archive","아카이브"],["stats","통계 · 회고"],["stocks","주식"],["bitcoin","비트코인"]];
 function renderChrome(){
   $("#brandCount").textContent = S.loaded ? `Personal register · ${S.entries.length}건` : "Personal register";
   $("#tabbar").innerHTML = VIEWS.map(([v, l]) => `<button type="button" data-view="${v}" aria-current="${S.view === v}">${l}</button>`).join("");
@@ -478,7 +478,14 @@ function render(){
   if(S.view === "archive") m.innerHTML = archiveHtml();
   else if(S.view === "calendar") m.innerHTML = calendarHtml();
   else if(S.view === "stocks"){ m.innerHTML = stocksHtml(); bindTips(m); bindDonut(m); }
+  else if(S.view === "bitcoin"){
+    // keep the calculator input (and its cursor) when a background refresh re-renders
+    const a = document.activeElement;
+    if(m.querySelector(".bt-wrap") && a && a.tagName === "INPUT" && m.contains(a)) btPaintLive();
+    else { m.innerHTML = bitcoinHtml(); bindBtChart(); }
+  }
   else m.innerHTML = statsHtml();
+  if(S.view === "bitcoin") btStart(); else btStop();
   hydrateImages();
 }
 function refresh(){
@@ -2279,10 +2286,671 @@ async function forgotPassword(){
   if($("#g-email")) $("#g-email").value = email;
 }
 
+/* ---------- bitcoin ---------- */
+// Live prices come straight from the exchanges' public websockets (KRW: Upbit or Bithumb, USD: Binance)
+// with REST polling as a fallback. Dominance: CoinGecko, Fear & Greed: Alternative.me, charts: Binance
+// klines + blockchain.com charts, blocks/fees: mempool.space through our "quotes" function, else Blockstream.
+const BT_TABS = [["overview","Overview"],["blocks","Blocks"],["convert","Convert"],["premium","Premium"]];
+const BT_METRICS = [["price","Market Price"],["difficulty","Difficulty"],["hashrate","Hashrate"]];
+const BT_RANGES = [["1d","1D"],["7d","7D"],["1m","1M"],["1y","1Y"],["5y","5Y"],["10y","10Y"],["all","All"]];
+const BT_LONG = ["1m","1y","5y","10y","all"]; // difficulty & hashrate only come as daily values
+const BT_SAYINGS = ["Stay humble and stack sats.","HODL.","Don't Trust, Verify","Not your keys, not your Bitcoin.","You need Bitcoin.","Tick tock, next block.","1 BTC = 1 BTC"];
+const BT_EX = {
+  upbit:{ name:"업비트", tag:"UPBIT", ws:"wss://api.upbit.com/websocket/v1", rest:"https://api.upbit.com/v1/ticker?markets=KRW-BTC,KRW-USDT" },
+  bithumb:{ name:"빗썸", tag:"BITHUMB", ws:"wss://ws-api.bithumb.com/websocket/v1", rest:"https://api.bithumb.com/v1/ticker?markets=KRW-BTC,KRW-USDT" }
+};
+const BN_WS = ["wss://stream.binance.com:9443/ws/btcusdt@ticker", "wss://data-stream.binance.vision/ws/btcusdt@ticker"];
+const BN_REST = ["https://api.binance.com", "https://data-api.binance.vision"];
+const BT_BN = { "1d":["5m",288], "7d":["1h",168], "1m":["4h",180], "1y":["1d",365], "5y":["1w",260] };
+const BT_BCI = { "7d":"7days", "1m":"30days", "1y":"1year", "5y":"5years", "10y":"10years", "all":"all" };
+const BT_TTL = { fx:10 * 60e3, dom:5 * 60e3, fng:30 * 60e3, candles:60e3, height:60e3, mp:30e3, rest:10e3 };
+const HALVING_EVERY = 210000;
+const FNG_KO = { "extreme fear":"극단적 공포", "fear":"공포", "neutral":"중립", "greed":"탐욕", "extreme greed":"극단적 탐욕" };
+const BT_UNITS = [["BTC","BTC"],["SATS","Sats"],["KRW","KRW"],["USD","USD"]];
+
+const BT = {
+  on:false, paused:false, tab:"overview", ex:"upbit", fxBasis:"bank", metric:"price", range:"5y",
+  krw:null, krwPct:null, usd:null, usdPct:null, usdtKrw:null, fx:null, fxAt:0,
+  dom:null, fng:null, fngLabel:"", height:null, candles:null, mp:null, mpErr:"",
+  at:{}, busy:{}, chart:{}, ws:{ kr:null, bn:null }, wsUp:{ kr:false, bn:false }, wsFail:{ kr:0, bn:0 }, wsLast:{ kr:0, bn:0 }, retry:{},
+  menu:null, saying:BT_SAYINGS[0], conv:{ amt:"1", unit:"BTC", prem:"0" }, toasted:false, timer:null, paintT:null, snap:false
+};
+try{
+  const p = JSON.parse(localStorage.getItem("sansiya-btc") || "{}");
+  if(BT_TABS.some(t => t[0] === p.tab)) BT.tab = p.tab;
+  if(BT_EX[p.ex]) BT.ex = p.ex;
+  if(p.fxBasis === "usdt") BT.fxBasis = "usdt";
+  if(BT_METRICS.some(m => m[0] === p.metric)) BT.metric = p.metric;
+  if(BT_RANGES.some(r => r[0] === p.range)) BT.range = p.range;
+  if(BT_UNITS.some(u => u[0] === p.unit)) BT.conv.unit = p.unit;
+}catch(e){}
+function btSavePrefs(){ try{ localStorage.setItem("sansiya-btc", JSON.stringify({ tab:BT.tab, ex:BT.ex, fxBasis:BT.fxBasis, metric:BT.metric, range:BT.range, unit:BT.conv.unit })); }catch(e){} }
+const BT_SNAP = ["krw","krwPct","usd","usdPct","usdtKrw","fx","fxAt","dom","fng","fngLabel","height","candles","mp"];
+function btSaveSnap(){ const o = { ex:BT.ex, savedAt:Date.now() }; BT_SNAP.forEach(key => { o[key] = BT[key]; }); KV.set("btc-snap", o); }
+function btLoadSnap(){
+  if(BT.snap) return; BT.snap = true;
+  KV.get("btc-snap").then(o => {
+    if(!o) return;
+    BT_SNAP.forEach(key => {
+      if(o.ex !== BT.ex && (key === "krw" || key === "krwPct" || key === "usdtKrw")) return;
+      if(BT[key] == null && o[key] != null) BT[key] = o[key];
+    });
+    if(S.view === "bitcoin" && BT.on) btPaintAll();
+  });
+}
+
+/* numbers */
+const bInt = v => num(v) ? Math.round(v).toLocaleString("en-US") : "-";
+const bFix = (v, d) => num(v) ? v.toLocaleString("en-US", { minimumFractionDigits:d, maximumFractionDigits:d }) : "-";
+const bSign = v => num(v) && v > 0 ? "+" : num(v) && v < 0 ? "-" : "";
+const bTone = v => !num(v) || Math.abs(v) < 1e-9 ? "flat" : v > 0 ? "up" : "down";
+const bFee = v => num(v) ? (v < 10 ? v.toFixed(1) : Math.round(v).toLocaleString("en-US")) : "-";
+const bYmd = t => { const d = new Date(t); return `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())}`; };
+function bAgo(sec){
+  const m = Math.max(0, Math.floor((Date.now() / 1000 - sec) / 60));
+  if(m < 1) return "방금"; if(m < 60) return `${m}분 전`;
+  const h = Math.floor(m / 60); return h < 24 ? `${h}시간${m % 60 ? ` ${m % 60}분` : ""} 전` : `${Math.floor(h / 24)}일 전`;
+}
+function btUnit(v, units){ for(const [u, d] of units){ if(Math.abs(v) >= d) { const x = v / d; return (x >= 100 ? Math.round(x).toLocaleString("en-US") : x.toFixed(x >= 10 ? 1 : 2)) + u; } } return String(v); }
+function btFmtMetric(v, metric){
+  if(!num(v)) return "-";
+  if(metric === "hashrate") return btUnit(v, [[" EH/s",1e6],[" PH/s",1e3],[" TH/s",1],[" GH/s",1e-3],[" MH/s",1e-6],[" KH/s",1e-9]]);
+  if(metric === "difficulty") return btUnit(v, [["T",1e12],["G",1e9],["M",1e6],["K",1e3],["",1e-9]]);
+  return "$" + bInt(v);
+}
+const btRate = () => BT.fxBasis === "usdt" && num(BT.usdtKrw) ? BT.usdtKrw : BT.fx;
+const btPremium = () => { const r = btRate(); return num(BT.krw) && num(BT.usd) && num(r) && BT.usd > 0 ? (BT.krw / (BT.usd * r) - 1) * 100 : null; };
+function btHalving(){
+  const h = BT.height; if(!num(h)) return null;
+  const epoch = Math.floor(h / HALVING_EVERY), start = epoch * HALVING_EVERY, next = start + HALVING_EVERY, remain = next - h;
+  return { h, p:(h - start) / HALVING_EVERY, remain, next, est:Date.now() + remain * 600e3, reward:50 / 2 ** (epoch + 1) };
+}
+
+/* icons */
+const BT_COIN = `<svg class="bt-coin" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="var(--bt-orange)"/><g transform="rotate(14 32 32)" fill="#fff"><rect x="25" y="12" width="4.6" height="8" rx="1.2"/><rect x="33" y="12" width="4.6" height="8" rx="1.2"/><rect x="25" y="44" width="4.6" height="8" rx="1.2"/><rect x="33" y="44" width="4.6" height="8" rx="1.2"/><path d="M20 18h15.5c5.8 0 9.5 3 9.5 7.6 0 3.2-1.8 5.4-4.6 6.2 3.6.7 6 3.2 6 7 0 5.2-4.1 8.2-10.6 8.2H20v-5.3h3.4V23.3H20zm9.6 5.2v7.1h5.2c2.4 0 3.9-1.3 3.9-3.6s-1.5-3.5-3.9-3.5zm0 12.1v7.6h6c2.7 0 4.3-1.4 4.3-3.8s-1.6-3.8-4.3-3.8z"/></g></svg>`;
+const BT_GEAR = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
+const BT_CHEV = `<svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 4.5 3.5 3.5 3.5-3.5"/></svg>`;
+const BT_BARS = `<svg class="bars" viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="9" width="4" height="9" rx="1"/><rect x="8" y="3" width="4" height="15" rx="1"/><rect x="14" y="6" width="4" height="12" rx="1"/></svg>`;
+const BT_HALF = `<svg class="half" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.2" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M10 1.8a8.2 8.2 0 0 0 0 16.4z" fill="currentColor"/></svg>`;
+const BT_TRI = { up:`<svg viewBox="0 0 10 8" aria-hidden="true"><path d="M5 0 10 8H0z"/></svg>`, down:`<svg viewBox="0 0 10 8" aria-hidden="true"><path d="M5 8 0 0h10z"/></svg>`, flat:"" };
+const BT_COPY = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/></svg>`;
+function btCubes(){
+  const cube = (x, y, s) => { const w = s * 0.866, h = s / 2; return `<path d="M${x} ${y - h}L${x + w} ${y}L${x} ${y + h}L${x - w} ${y}Z M${x - w} ${y}V${y + s}L${x} ${y + s + h}L${x + w} ${y + s}V${y} M${x} ${y + h}V${y + s + h}"/>`; };
+  return `<svg class="bt-cubes" viewBox="0 0 60 48" aria-hidden="true">${cube(14, 14, 11)}${cube(33, 26, 11)}${cube(48, 13, 9)}</svg>`;
+}
+const BT_ICONS = {
+  overview:`<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="2" class="a"/><rect x="13" y="3" width="8" height="8" rx="2" class="b"/><rect x="3" y="13" width="8" height="8" rx="2" class="b"/><rect x="13" y="13" width="8" height="8" rx="2" class="a"/></svg>`,
+  blocks:`<svg viewBox="0 0 24 24" aria-hidden="true" class="ln"><path d="M12 2.8 20 7.2v9.6L12 21.2 4 16.8V7.2z"/><path d="M4 7.2 12 11.6l8-4.4M12 11.6v9.6"/></svg>`,
+  convert:`<svg viewBox="0 0 24 24" aria-hidden="true" class="ln"><path d="M4 8.5h15.5M15.5 4.5l4 4-4 4M20 15.5H4.5M8.5 11.5l-4 4 4 4"/></svg>`,
+  premium:`<svg viewBox="0 0 24 24" aria-hidden="true" class="ln"><circle cx="12" cy="9" r="6"/><path d="m12 6 .95 1.95 2.15.3-1.55 1.5.37 2.13L12 10.88l-1.92 1 .37-2.13L8.9 8.25l2.15-.3z"/><path d="M8.3 13.7 7 21l5-2.6 5 2.6-1.3-7.3"/></svg>`
+};
+
+/* data */
+const btSig = ms => (typeof AbortSignal !== "undefined" && AbortSignal.timeout) ? AbortSignal.timeout(ms) : undefined;
+async function btJson(url, ms = 9000){
+  const r = await fetch(url, { signal:btSig(ms), cache:"no-store" });
+  if(!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+async function btLoad(name, fn){
+  if(BT.busy[name]) return; BT.busy[name] = true;
+  try{ await fn(); BT.at[name] = Date.now(); }
+  catch(e){ BT.at[name] = Date.now() - (BT_TTL[name] || 60e3) + 20e3; }
+  finally{ BT.busy[name] = false; }
+}
+const btLoadFx = () => btLoad("fx", async () => {
+  let v = null, t = 0;
+  if(S.fx && num(S.fx.usdkrw) && S.quotesAt && Date.now() - S.quotesAt < 30 * 60e3){ v = S.fx.usdkrw; t = S.fx.time ? S.fx.time * 1000 : S.quotesAt; }
+  if(v == null && S.B && S.B.kind !== "local" && navigator.onLine){
+    try{ const d = await S.B.invoke({ action:"quotes", symbols:[] }); if(d && d.fx && num(d.fx.usdkrw)){ S.fx = d.fx; v = d.fx.usdkrw; t = d.fx.time ? d.fx.time * 1000 : Date.now(); } }catch(e){}
+  }
+  if(v == null){ const j = await btJson("https://open.er-api.com/v6/latest/USD"); if(j && j.rates && num(j.rates.KRW)){ v = j.rates.KRW; t = (j.time_last_update_unix || 0) * 1000 || Date.now(); } }
+  if(v == null) throw new Error("no fx");
+  BT.fx = v; BT.fxAt = t;
+});
+const btLoadDom = () => btLoad("dom", async () => {
+  const j = await btJson("https://api.coingecko.com/api/v3/global");
+  const v = j && j.data && j.data.market_cap_percentage && j.data.market_cap_percentage.btc;
+  if(!num(v)) throw new Error("no dominance"); BT.dom = v;
+});
+const btLoadFng = () => btLoad("fng", async () => {
+  const j = await btJson("https://api.alternative.me/fng/?limit=1"); const d = j && j.data && j.data[0];
+  if(!d || !isFinite(+d.value)) throw new Error("no fng");
+  BT.fng = +d.value; BT.fngLabel = FNG_KO[String(d.value_classification || "").toLowerCase()] || String(d.value_classification || "");
+});
+async function btKlines(interval, limit){
+  let last;
+  for(const b of BN_REST){ try{ const j = await btJson(`${b}/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=${limit}`, 10000); if(Array.isArray(j) && j.length) return j; }catch(e){ last = e; } }
+  throw last || new Error("no klines");
+}
+const btLoadCandles = () => btLoad("candles", async () => { BT.candles = (await btKlines("2h", 12)).map(r => [+r[0], +r[1], +r[2], +r[3], +r[4]]); });
+const btLoadHeight = () => btLoad("height", async () => {
+  let h = null;
+  for(const u of ["https://blockstream.info/api/blocks/tip/height", "https://blockchain.info/q/getblockcount?cors=true"]){
+    try{ const r = await fetch(u, { signal:btSig(8000), cache:"no-store" }); if(r.ok){ const v = parseInt(await r.text(), 10); if(v > 800000){ h = v; break; } } }catch(e){}
+  }
+  if(h == null) throw new Error("no height");
+  if(!num(BT.height) || h >= BT.height) BT.height = h;
+});
+async function btBlockstream(){
+  const B = "https://blockstream.info/api";
+  const [blocks, est, pool] = await Promise.all([btJson(B + "/blocks"), btJson(B + "/fee-estimates").catch(() => null), btJson(B + "/mempool").catch(() => null)]);
+  if(!Array.isArray(blocks) || !blocks.length) throw new Error("no blocks");
+  const f = est || {}, pick = (...ks) => { for(const kk of ks) if(num(f[kk])) return f[kk]; return null; };
+  return {
+    blocks:blocks.map(b => ({ height:b.height, ts:b.timestamp, size:b.size, tx:b.tx_count, pool:"" })),
+    fees:{ eco:pick("144","504","1008"), low:pick("6","12","10"), mid:pick("3","4","2"), high:pick("1","2") },
+    pending:pool ? { vsize:pool.vsize, count:pool.count, next:null } : null, src:"Blockstream", at:Date.now()
+  };
+}
+const btLoadMp = () => btLoad("mp", async () => {
+  let d = null;
+  try{
+    if(S.B && S.B.kind !== "local" && navigator.onLine){
+      try{ d = await S.B.invoke({ action:"mempool" }); }catch(e){ d = null; }
+      if(!d || !Array.isArray(d.blocks) || !d.blocks.length) d = null;
+    }
+    if(!d) d = await btBlockstream();
+  }catch(e){ BT.mpErr = navigator.onLine ? "블록 정보를 불러오지 못했어요." : "인터넷에 연결되면 블록 정보를 볼 수 있어요."; throw e; }
+  BT.mp = d; BT.mpErr = "";
+  const top = d.blocks[0]; if(top && (!num(BT.height) || top.height > BT.height)) BT.height = top.height;
+});
+const btLoadRest = () => btLoad("rest", async () => {
+  const jobs = [];
+  if(Date.now() - BT.wsLast.kr > 15000){
+    const ex = BT.ex;
+    jobs.push(btJson(BT_EX[ex].rest).then(arr => { if(ex !== BT.ex) return; (arr || []).forEach(d => {
+      if(d.market === "KRW-BTC" && isFinite(+d.trade_price)){ BT.krw = +d.trade_price; if(isFinite(+d.signed_change_rate)) BT.krwPct = +d.signed_change_rate * 100; }
+      else if(d.market === "KRW-USDT" && isFinite(+d.trade_price)) BT.usdtKrw = +d.trade_price;
+    }); }));
+  }
+  if(Date.now() - BT.wsLast.bn > 15000){
+    jobs.push((async () => { for(const b of BN_REST){ try{ const d = await btJson(`${b}/api/v3/ticker/24hr?symbol=BTCUSDT`); if(isFinite(+d.lastPrice)){ BT.usd = +d.lastPrice; BT.usdPct = +d.priceChangePercent; return; } }catch(e){} } })());
+  }
+  await Promise.all(jobs.map(p => p.catch(() => {})));
+});
+const btRangeFor = () => BT.metric !== "price" && !BT_LONG.includes(BT.range) ? "1m" : BT.range;
+const btChartKey = () => BT.metric + "|" + btRangeFor();
+async function btLoadChart(){
+  const metric = BT.metric, range = btRangeFor(), key = metric + "|" + range, c = BT.chart[key];
+  const ttl = range === "1d" ? 60e3 : range === "7d" ? 5 * 60e3 : 60 * 60e3;
+  if(c && Date.now() - c.at < (c.err ? 20e3 : ttl)) return;
+  if(BT.busy["ch:" + key]) return; BT.busy["ch:" + key] = true;
+  let pts = null, err = "";
+  try{
+    if(metric === "price" && BT_BN[range]){
+      try{ const [iv, n] = BT_BN[range]; pts = (await btKlines(iv, n)).map(r => [+r[0], +r[4]]); }
+      catch(e){ if(!BT_BCI[range] || range === "7d") throw e; }
+    }
+    if(!pts){
+      const name = metric === "price" ? "market-price" : metric === "difficulty" ? "difficulty" : "hash-rate";
+      const j = await btJson(`https://api.blockchain.info/charts/${name}?timespan=${BT_BCI[range]}&format=json&cors=true${range === "1m" ? "" : "&sampled=true"}`, 15000);
+      pts = (j.values || []).map(v => [v.x * 1000, +v.y]).filter(p => num(p[1]) && p[1] > 0);
+    }
+    if(!pts || pts.length < 2) throw new Error("empty");
+  }catch(e){ pts = null; err = navigator.onLine ? "차트를 불러오지 못했어요." : "인터넷에 연결되면 차트를 볼 수 있어요."; }
+  finally{ BT.busy["ch:" + key] = false; }
+  BT.chart[key] = { at:Date.now(), pts, err };
+  if(BT.on && S.view === "bitcoin" && btChartKey() === key) btPaintChart();
+}
+
+/* live sockets */
+function btConnect(which){
+  if(!BT.on || BT.paused || BT.ws[which] || typeof WebSocket === "undefined") return;
+  const ex = BT.ex, url = which === "kr" ? BT_EX[ex].ws : BN_WS[BT.wsFail.bn % 2];
+  let ws; try{ ws = new WebSocket(url); }catch(e){ BT.wsFail[which]++; btRetry(which); return; }
+  ws.binaryType = "arraybuffer"; BT.ws[which] = ws;
+  ws.onopen = () => { if(which === "kr") ws.send(JSON.stringify([{ ticket:"sansiya-" + Math.random().toString(36).slice(2, 10) }, { type:"ticker", codes:["KRW-BTC","KRW-USDT"] }, { format:"DEFAULT" }])); };
+  ws.onmessage = ev => {
+    if(BT.ws[which] !== ws) return;
+    let d; try{ d = JSON.parse(typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data)); }catch(e){ return; }
+    if(which === "kr"){
+      if(ex !== BT.ex || !d) return;
+      if(d.code === "KRW-BTC" && isFinite(+d.trade_price)){ BT.krw = +d.trade_price; if(isFinite(+d.signed_change_rate)) BT.krwPct = +d.signed_change_rate * 100; }
+      else if(d.code === "KRW-USDT" && isFinite(+d.trade_price)) BT.usdtKrw = +d.trade_price;
+      else return;
+    } else {
+      if(!d || !isFinite(+d.c)) return;
+      BT.usd = +d.c; if(isFinite(+d.P)) BT.usdPct = +d.P;
+    }
+    BT.wsLast[which] = Date.now();
+    if(!BT.wsUp[which]){ BT.wsUp[which] = true; BT.wsFail[which] = 0; btConnToast(); }
+    btSchedulePaint();
+  };
+  ws.onclose = () => {
+    if(BT.ws[which] !== ws) return;
+    BT.ws[which] = null; BT.wsUp[which] = false; btSchedulePaint();
+    if(BT.on && !BT.paused){ BT.wsFail[which]++; btRetry(which); }
+  };
+  ws.onerror = () => { try{ ws.close(); }catch(e){} };
+}
+function btRetry(which){ clearTimeout(BT.retry[which]); const n = Math.max(1, BT.wsFail[which]); BT.retry[which] = setTimeout(() => btConnect(which), Math.min(30000, 1500 * 2 ** Math.min(n, 5))); }
+function btClose(which){ clearTimeout(BT.retry[which]); const ws = BT.ws[which]; BT.ws[which] = null; BT.wsUp[which] = false; if(ws){ try{ ws.close(); }catch(e){} } }
+function btConnToast(){
+  if(BT.toasted || !BT.wsUp.kr || !BT.wsUp.bn || S.view !== "bitcoin") return;
+  BT.toasted = true; toast(`${BT_EX[BT.ex].name} · 바이낸스 실시간 연결!`);
+}
+const btLiveState = () => (BT.wsUp.kr && BT.wsUp.bn) ? "on" : (BT.ws.kr || BT.ws.bn || BT.wsUp.kr || BT.wsUp.bn) ? "wait" : "off";
+const btLiveLabel = () => ({ on:"실시간 연결됨", wait:"연결 중", off:"실시간 연결 끊김 · 잠시마다 새로 불러와요" })[btLiveState()];
+
+function btStart(){
+  if(BT.on) return;
+  BT.on = true; BT.paused = document.visibilityState !== "visible";
+  btLoadSnap();
+  if(!BT.paused){ btConnect("kr"); btConnect("bn"); }
+  btTick();
+  BT.timer = setInterval(btTick, 4000);
+}
+function btStop(){
+  if(!BT.on) return;
+  BT.on = false; BT.menu = null; clearInterval(BT.timer); BT.timer = null;
+  btClose("kr"); btClose("bn"); btSaveSnap();
+}
+function btPause(){ if(!BT.on || BT.paused) return; BT.paused = true; btClose("kr"); btClose("bn"); btSaveSnap(); }
+function btResume(){ if(!BT.on || !BT.paused) return; BT.paused = false; BT.wsFail.kr = BT.wsFail.bn = 0; btConnect("kr"); btConnect("bn"); btTick(); }
+function btTick(){
+  if(!BT.on || BT.paused) return;
+  const due = n => !BT.busy[n] && Date.now() - (BT.at[n] || 0) > BT_TTL[n];
+  if(due("rest") && (Date.now() - BT.wsLast.kr > 15000 || Date.now() - BT.wsLast.bn > 15000)) btLoadRest().then(btPaintLive);
+  if(due("fx")) btLoadFx().then(btPaintLive);
+  if(due("dom")) btLoadDom().then(btPaintLive);
+  if(due("fng")) btLoadFng().then(btPaintLive);
+  if(due("candles")) btLoadCandles().then(btPaintCandles);
+  if(due("height")) btLoadHeight().then(btPaintHalving);
+  if((BT.tab === "blocks" || !BT.mp) && due("mp")) btLoadMp().then(() => { btPaintBlocks(); btPaintHalving(); });
+  if(BT.tab === "overview") btLoadChart();
+  if(Date.now() - (BT.at.snap || 0) > 60e3){ BT.at.snap = Date.now(); btSaveSnap(); }
+  btSchedulePaint();
+}
+
+/* painting: live numbers update in place, parts re-render on their own */
+function btSchedulePaint(){ if(BT.paintT) return; BT.paintT = setTimeout(() => { BT.paintT = null; btPaintLive(); }, 350); }
+const setH = (id, html) => { const el = document.getElementById(id); if(el && el.innerHTML !== html) el.innerHTML = html; return el; };
+const btKrwTxt = () => "₩" + bInt(BT.krw);
+const btUsdTxt = () => "$ " + bInt(BT.usd);
+const btChg = (id, pct) => `<span class="bt-chg ${bTone(pct)}" id="${id}">${BT_TRI[bTone(pct)]}${num(pct) ? Math.abs(pct).toFixed(2) + "%" : ""}</span>`;
+function btPaintChg(id, pct){ const el = document.getElementById(id); if(!el) return; const c = "bt-chg " + bTone(pct); if(el.className !== c) el.className = c; setH(id, `${BT_TRI[bTone(pct)]}${num(pct) ? Math.abs(pct).toFixed(2) + "%" : ""}`); }
+const btPct = (v, d = 2) => num(v) ? `${v.toFixed(d)}<small>%</small>` : "-";
+function btLiveParts(){
+  const pr = btPremium(), r = btRate(), usdt = BT.fxBasis === "usdt" && num(BT.usdtKrw);
+  const krUsd = num(BT.krw) && num(r) ? BT.krw / r : null, bnKrw = num(BT.usd) && num(r) ? BT.usd * r : null;
+  const dK = num(BT.krw) && num(bnKrw) ? BT.krw - bnKrw : null, dU = num(krUsd) && num(BT.usd) ? krUsd - BT.usd : null;
+  return {
+    btKrw:btKrwTxt(), btUsd:btUsdTxt(),
+    btDom:btPct(BT.dom, 1), btFx:num(r) ? bFix(r, 1) : "-", btFxL:usdt ? "KRW/USDT" : "KRW/USD", btPrem:btPct(pr), btFng:num(BT.fng) ? String(BT.fng) : "-",
+    bcK:btKrwTxt(), bcU:"$" + bInt(BT.usd),
+    bpBig:num(pr) ? `${bSign(pr)}${Math.abs(pr).toFixed(2)}%` : "-", bpBadge:num(pr) && pr < 0 ? "역프리미엄" : "프리미엄",
+    bpKK:bInt(BT.krw), bpKU:bInt(krUsd), bpBK:bInt(bnKrw), bpBU:bInt(BT.usd),
+    bpDK:num(dK) ? bSign(dK) + bInt(Math.abs(dK)) : "-", bpDU:num(dU) ? bSign(dU) + bInt(Math.abs(dU)) : "-",
+    bpFx:num(r) ? bFix(r, 1) : "-", bpFxL:usdt ? `USDT 시세(${BT_EX[BT.ex].name})` : "실시간 환율(USD/KRW)",
+    bpFxT:usdt ? "실시간" : BT.fxAt ? `${bYmd(BT.fxAt)} 업데이트` : "",
+    _pr:pr, _dK:dK
+  };
+}
+function btPaintLive(){
+  if(S.view !== "bitcoin") return;
+  const v = btLiveParts();
+  for(const [id, html] of Object.entries(v)) if(id[0] !== "_") setH(id, html);
+  btPaintChg("btKrwChg", BT.krwPct); btPaintChg("btUsdChg", BT.usdPct); btPaintChg("bcKc", BT.krwPct); btPaintChg("bcUc", BT.usdPct);
+  const live = document.getElementById("btLive");
+  if(live){ const s = btLiveState(); if(live.dataset.live !== s){ live.dataset.live = s; live.title = btLiveLabel(); live.setAttribute("aria-label", btLiveLabel()); } }
+  const pt = bTone(v._pr);
+  ["bpBig", "bpBadge"].forEach(id => { const el = document.getElementById(id); if(el) el.dataset.tone = pt; });
+  ["bpDK", "bpDU"].forEach(id => { const el = document.getElementById(id); if(el) el.dataset.tone = bTone(v._dK); });
+  const mk = document.getElementById("bpMark"); if(mk) mk.style.left = (num(v._pr) ? Math.max(0, Math.min(100, (v._pr + 10) / 5 * 25)) : 50) + "%";
+  btPaintCandles(true); btPaintConvert();
+}
+function btPaintCandles(liveOnly){
+  const el = document.getElementById("btCandles"); if(!el) return;
+  if(liveOnly && (!BT.candles || BT._cUsd === BT.usd)) return;
+  BT._cUsd = BT.usd; el.outerHTML = btCandlesSvg();
+}
+function btPaintChart(){ const el = document.getElementById("btChart"); if(!el) return; el.innerHTML = btChartSvg(); bindBtChart(); }
+function btPaintHalving(){
+  if(S.view !== "bitcoin") return;
+  setH("btHalving", btHalvingHtml()); setH("bkHalving", bkHalvingHtml());
+}
+function btPaintBlocks(){
+  if(S.view !== "bitcoin" || BT.tab !== "blocks") return;
+  setH("bkStrip", bkStripHtml()); setH("bkFeeHead", bkFeeHeadHtml()); setH("bkFees", bkFeesHtml()); setH("bkSrc", bkSrcHtml());
+}
+function btPaintMenus(){
+  setH("btChHead", btChHeadHtml());
+  setH("bcUnitWrap", bcUnitHtml());
+}
+function btPaintAll(){
+  if(S.view !== "bitcoin") return;
+  const body = document.getElementById("btBody"), a = document.activeElement;
+  if(body && a && body.contains(a) && a.tagName === "INPUT"){ btPaintLive(); return; }
+  if(body){ body.innerHTML = btBodyHtml(); bindBtChart(); }
+  btPaintLive();
+}
+
+/* render */
+function bitcoinHtml(){
+  return `<div class="bt-wrap">
+    <div class="bt-head">
+      <h2 class="bt-title">${BT_COIN}<span>BITCOIN</span></h2>
+      <span class="bt-live" id="btLive" data-live="${btLiveState()}" role="img" aria-label="${btLiveLabel()}" title="${btLiveLabel()}"></span>
+      <button type="button" class="bt-gear" data-act="btSet" aria-label="비트코인 설정">${BT_GEAR}</button>
+    </div>
+    <div id="btBody">${btBodyHtml()}</div>
+    <p class="bt-say" id="btSay">${esc(BT.saying)}</p>
+    <p class="bt-src">시세 ${BT_EX[BT.ex].name}·바이낸스 실시간 · 도미넌스 CoinGecko · 공포·탐욕 Alternative.me · 차트 Binance·blockchain.com · 블록 mempool.space·Blockstream. 투자 판단의 근거가 아니라 기록용이에요.</p>
+    <nav class="bt-nav" aria-label="비트코인 메뉴">${BT_TABS.map(([v, l]) => `<button type="button" data-bttab="${v}" aria-current="${BT.tab === v}"><span class="ic">${BT_ICONS[v]}</span><span>${l}</span></button>`).join("")}</nav>
+  </div>`;
+}
+function btBodyHtml(){
+  return BT.tab === "blocks" ? btBlocksHtml() : BT.tab === "convert" ? btConvertHtml() : BT.tab === "premium" ? btPremiumHtml() : btOverviewHtml();
+}
+function btSetTab(tab){
+  if(!BT_TABS.some(t => t[0] === tab)) return;
+  BT.tab = tab; BT.menu = null; btSavePrefs();
+  BT.saying = BT_SAYINGS[Math.floor(Math.random() * BT_SAYINGS.length)];
+  if(S.view !== "bitcoin"){ S.view = "bitcoin"; render(); }
+  else { setH("btBody", btBodyHtml()); setH("btSay", esc(BT.saying)); document.querySelectorAll(".bt-nav [data-bttab]").forEach(b => b.setAttribute("aria-current", String(b.dataset.bttab === tab))); bindBtChart(); btPaintLive(); }
+  window.scrollTo({ top:0 });
+  if(tab === "blocks") btLoadMp().then(() => { btPaintBlocks(); btPaintHalving(); });
+  if(tab === "overview") btLoadChart();
+}
+
+/* overview */
+function btOverviewHtml(){
+  const v = btLiveParts();
+  return `<section class="bt-top" aria-label="비트코인 시세">
+      <div class="bt-prices">
+        <div class="bt-pr"><b id="btKrw">${v.btKrw}</b>${btChg("btKrwChg", BT.krwPct)}</div>
+        <div class="bt-pr"><b id="btUsd">${v.btUsd}</b>${btChg("btUsdChg", BT.usdPct)}</div>
+      </div>
+      ${btCandlesSvg()}
+    </section>
+    <div class="bt-tiles">
+      <button type="button" class="bt-tile" data-bttile="dom"><span>BTC.D</span><b id="btDom">${v.btDom}</b></button>
+      <button type="button" class="bt-tile" data-bttile="fx"><span id="btFxL">${v.btFxL}</span><b id="btFx">${v.btFx}</b></button>
+      <button type="button" class="bt-tile" data-bttile="prem"><span>Premium</span><b id="btPrem">${v.btPrem}</b></button>
+      <button type="button" class="bt-tile" data-bttile="fng"><span>F&amp;G Index</span><b id="btFng">${v.btFng}</b></button>
+    </div>
+    <section class="bt-sec">
+      <div class="bt-chhead" id="btChHead">${btChHeadHtml()}</div>
+      <div class="bt-ch" id="btChart">${btChartSvg()}</div>
+    </section>
+    <section class="bt-sec" id="btHalving">${btHalvingHtml()}</section>`;
+}
+function btCandlesSvg(){
+  const W = 120, H = 66, P = 6;
+  const c = BT.candles;
+  if(!c || c.length < 2) return `<svg class="bt-candles" id="btCandles" viewBox="0 0 ${W} ${H}" aria-hidden="true"></svg>`;
+  const rows = c.map((r, i) => i === c.length - 1 && num(BT.usd) ? [r[0], r[1], Math.max(r[2], BT.usd), Math.min(r[3], BT.usd), BT.usd] : r);
+  const lo = Math.min(...rows.map(r => Math.min(r[1], r[4]))), hi = Math.max(...rows.map(r => Math.max(r[1], r[4])));
+  const Y = v => P + (hi - v) / ((hi - lo) || 1) * (H - P * 2), step = (W - P * 2) / (rows.length - 1);
+  const bars = rows.map((r, i) => {
+    const x = (P + i * step).toFixed(1), y1 = Y(Math.max(r[1], r[4])), y2 = Math.max(Y(Math.min(r[1], r[4])), y1 + 0.5);
+    return `<line x1="${x}" x2="${x}" y1="${y1.toFixed(1)}" y2="${y2.toFixed(1)}" class="${r[4] >= r[1] ? "u" : "d"}"/>`;
+  }).join("");
+  const up = rows[rows.length - 1][4] >= rows[0][1];
+  return `<svg class="bt-candles" id="btCandles" viewBox="0 0 ${W} ${H}" role="img" aria-label="최근 24시간 2시간 봉 ${rows.length}개, ${up ? "상승" : "하락"}">${bars}</svg>`;
+}
+function btChHeadHtml(){
+  const ml = (BT_METRICS.find(m => m[0] === BT.metric) || BT_METRICS[0])[1], r = btRangeFor(), rl = (BT_RANGES.find(x => x[0] === r) || BT_RANGES[4])[1];
+  const ranges = BT.metric === "price" ? BT_RANGES : BT_RANGES.filter(x => BT_LONG.includes(x[0]));
+  return `<div class="bt-mw"><button type="button" class="bt-metric" data-btmenu="metric" aria-haspopup="menu" aria-expanded="${BT.menu === "metric"}">${BT_BARS}<span>${ml}</span>${BT_CHEV}</button>
+      ${BT.menu === "metric" ? `<div class="bt-pop" role="menu" aria-label="차트 종류">${BT_METRICS.map(([v, l]) => `<button type="button" role="menuitemradio" aria-checked="${BT.metric === v}" data-btmetric="${v}">${l}</button>`).join("")}</div>` : ""}</div>
+    <div class="bt-mw end"><button type="button" class="bt-range" data-btmenu="range" aria-haspopup="menu" aria-expanded="${BT.menu === "range"}" aria-label="기간 ${rl}">${BT_CHEV}<span>${rl}</span></button>
+      ${BT.menu === "range" ? `<div class="bt-pop end" role="menu" aria-label="기간">${ranges.map(([v, l]) => `<button type="button" role="menuitemradio" aria-checked="${r === v}" data-btrange="${v}">${l}</button>`).join("")}</div>` : ""}</div>`;
+}
+let BTCH = null;
+function btChartSvg(){
+  BTCH = null;
+  const key = btChartKey(), c = BT.chart[key], metric = BT.metric, range = btRangeFor();
+  if(!c) return `<div class="bt-ch-msg">차트를 불러오는 중…</div>`;
+  if(c.err || !c.pts) return `<div class="bt-ch-msg">${esc(c.err || "차트 데이터가 없어요.")}</div>`;
+  const pts = c.pts, vals = pts.map(p => p[1]);
+  const W = Math.max(300, Math.min(640, window.innerWidth || 600)), H = 196, T = 44, B = 14;
+  let mn = Math.min(...vals), mx = Math.max(...vals); if(mn === mx){ mn *= 0.98; mx *= 1.02; }
+  const X = i => i * W / (pts.length - 1), Y = v => T + (mx - v) / (mx - mn) * (H - T - B);
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join("");
+  const imx = vals.indexOf(mx), mxTxt = btFmtMetric(mx, metric);
+  const lw = mxTxt.length * 8.2 + 22, lx = Math.max(lw / 2 + 2, Math.min(W - lw / 2 - 2, X(imx))), ly = Math.max(4, Y(mx) - 38);
+  const grid = Array.from({ length:7 }, (_, i) => { const y = (8 + i * (H - 16) / 6).toFixed(1); return `<line x1="0" x2="${W}" y1="${y}" y2="${y}"/>`; }).join("");
+  const fd = t => { const x = new Date(t); return range === "1d" ? `${pad(x.getHours())}:${pad(x.getMinutes())}` : (range === "7d" || range === "1m") ? `${x.getMonth() + 1}/${x.getDate()} ${pad(x.getHours())}:${pad(x.getMinutes())}` : bYmd(t); };
+  const ml = (BT_METRICS.find(m => m[0] === metric) || BT_METRICS[0])[1], rl = (BT_RANGES.find(x => x[0] === range) || [0, ""])[1];
+  BTCH = { pts, X, Y, W, H, T, fd, metric };
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="비트코인 ${ml} ${rl} 차트, 최고 ${esc(mxTxt)}">
+      <defs><linearGradient id="btGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--bt-orange)" stop-opacity=".22"/><stop offset="1" stop-color="var(--bt-orange)" stop-opacity="0"/></linearGradient>
+        <filter id="btGlow" x="-5%" y="-30%" width="110%" height="160%"><feGaussianBlur stdDeviation="3.5"/></filter></defs>
+      <g class="bt-grid">${grid}</g>
+      <path d="${d}L${W} ${H}L0 ${H}Z" fill="url(#btGrad)"/>
+      <path d="${d}" class="bt-glow" filter="url(#btGlow)"/>
+      <path d="${d}" class="bt-line"/>
+      <circle cx="${X(imx).toFixed(1)}" cy="${Y(mx).toFixed(1)}" r="4.5" class="bt-mxdot"/>
+      <g class="bt-mxlab"><rect x="${(lx - lw / 2).toFixed(1)}" y="${ly.toFixed(1)}" width="${lw.toFixed(1)}" height="27" rx="7"/><text x="${lx.toFixed(1)}" y="${(ly + 18.5).toFixed(1)}" text-anchor="middle">${esc(mxTxt)}</text></g>
+      <g class="bt-cross" visibility="hidden"><line y1="0" y2="${H}"/><circle r="5"/></g>
+      <rect class="bt-hit" x="0" y="0" width="${W}" height="${H}" fill="transparent"/>
+    </svg><div class="st-tip" hidden></div>`;
+}
+function bindBtChart(){
+  const box = document.getElementById("btChart"); if(!box || !BTCH) return;
+  const svg = box.querySelector("svg"), tip = box.querySelector(".st-tip"), g = svg && svg.querySelector(".bt-cross");
+  if(!svg || !g || !tip) return;
+  const geo = BTCH;
+  const move = ev => {
+    const r = svg.getBoundingClientRect(); if(!r.width) return;
+    let i = Math.round((ev.clientX - r.left) / r.width * (geo.pts.length - 1));
+    i = Math.max(0, Math.min(geo.pts.length - 1, i));
+    const px = geo.X(i), py = geo.Y(geo.pts[i][1]);
+    g.setAttribute("visibility", "visible");
+    const ln = g.querySelector("line"); ln.setAttribute("x1", px); ln.setAttribute("x2", px);
+    const c = g.querySelector("circle"); c.setAttribute("cx", px); c.setAttribute("cy", py);
+    tip.textContent = `${geo.fd(geo.pts[i][0])} · ${btFmtMetric(geo.pts[i][1], geo.metric)}`; tip.hidden = false;
+    const br = box.getBoundingClientRect(), half = tip.offsetWidth / 2, left = r.left - br.left + px / geo.W * r.width;
+    tip.style.left = Math.max(half, Math.min(br.width - half, left)) + "px";
+    tip.style.top = Math.max(24, r.top - br.top + py / geo.H * r.height - 10) + "px";
+  };
+  svg.addEventListener("pointermove", move);
+  svg.addEventListener("pointerdown", move);
+  svg.addEventListener("pointerleave", () => { g.setAttribute("visibility", "hidden"); tip.hidden = true; });
+}
+function btHalvingHtml(){
+  const hv = btHalving();
+  const segs = Array.from({ length:24 }, (_, i) => `<i class="${hv && i < Math.floor(hv.p * 24) ? "on" : ""}"></i>`).join("");
+  return `<h3 class="bt-h3">${BT_HALF}<span>Bitcoin Halving</span></h3>
+    <div class="bt-hbar" role="img" aria-label="${hv ? `반감기 진행 ${(hv.p * 100).toFixed(2)}%` : "반감기 정보를 불러오는 중"}"><div class="bt-segs">${segs}</div><b>${hv ? (hv.p * 100).toFixed(2) + "%" : "-"}</b></div>
+    <div class="bt-hstats">${btCubes()}
+      <div><span>Current</span><b>${hv ? bInt(hv.h) : "-"}</b></div>
+      <div><span>Remaining</span><b>${hv ? bInt(hv.remain) : "-"}</b></div>
+      <div><span>Estimated Date</span><b>${hv ? bYmd(hv.est) : "-"}</b></div>
+    </div>`;
+}
+
+/* blocks */
+function btBlocksHtml(){
+  return `<section class="bk" aria-label="비트코인 블록과 트랜잭션 수수료">
+    <div class="bk-strip" id="bkStrip">${bkStripHtml()}</div>
+    <section class="bt-sec bk-feesec">
+      <div class="bk-feehead" id="bkFeeHead">${bkFeeHeadHtml()}</div>
+      <div class="bk-fees" id="bkFees">${bkFeesHtml()}</div>
+    </section>
+    <form class="bk-search" id="bkSearch" role="search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="bkQ" type="search" placeholder="트랜잭션을 검색해 보세요" autocomplete="off" spellcheck="false" aria-label="블록 높이, 트랜잭션 ID 또는 주소">
+      <button type="button" class="bk-paste" data-act="bkPaste" aria-label="붙여넣기"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="12" height="16" rx="2"/><path d="M9 4V3h4v1M14 13h7M18 10l3 3-3 3"/></svg></button>
+      <button type="submit" class="bk-go">검색</button>
+    </form>
+    <section class="bk-card" id="bkHalving">${bkHalvingHtml()}</section>
+    <section class="bk-card bk-learn">
+      <h3>비트코인 블록 이해하기</h3>
+      <p>블록, 채굴, 반감기, 수수료까지 비트코인 네트워크의 기본 개념을 짧게 정리했어요.</p>
+      <details><summary>비트코인 블록이란?</summary><p>비트코인 거래를 약 10분마다 한 묶음으로 모아 장부에 덧붙인 것이 블록이에요. 블록마다 거래 목록과 바로 앞 블록의 지문(해시)이 들어 있어서, 지난 기록을 몰래 고치려면 그 뒤 블록을 전부 다시 만들어야 해요. 위의 주황색 상자 하나가 블록 하나이고, 숫자는 첫 블록부터 센 순번(블록 높이)이에요.</p></details>
+      <details><summary>채굴(Mining)은 어떻게 이뤄지나요?</summary><p>채굴자들은 정해진 조건을 만족하는 숫자를 찾는 계산 경쟁을 해요. 먼저 찾은 쪽이 다음 블록을 만들고, 새로 발행되는 비트코인과 블록에 담긴 거래 수수료를 보상으로 받아요. 난이도는 2,016블록(약 2주)마다 조정돼서 블록 간격이 평균 10분 안팎으로 유지돼요.</p></details>
+      <details><summary>반감기(Halving)란 무엇인가요?</summary><p>21만 블록(약 4년)마다 블록 보상이 절반으로 줄어드는 규칙이에요. 2024년 4월 840,000번째 블록에서 보상이 3.125 BTC가 됐고, 다음 반감기인 1,050,000번째 블록부터는 1.5625 BTC가 돼요. 이렇게 발행량이 줄어들어 전체 발행량은 2,100만 개를 넘지 않아요.</p></details>
+      <details><summary>트랜잭션 수수료는 왜 존재하나요?</summary><p>블록 하나에 담을 수 있는 공간이 정해져 있어서, 채굴자는 바이트당 수수료(sat/vB)를 많이 낸 거래부터 담아요. 급하면 수수료를 높게, 느긋하면 낮게 내면 돼요. 블록 보상이 줄어드는 만큼 수수료는 장기적으로 채굴자의 수입을 받쳐 주는 역할도 해요.</p></details>
+    </section>
+    <p class="bt-src" id="bkSrc">${bkSrcHtml()}</p>
+  </section>`;
+}
+const bkSrcHtml = () => BT.mp ? `블록·수수료 ${esc(BT.mp.src || "")} · ${fmtAgo(BT.mp.at || Date.now())} 기준` : "";
+function bkStripHtml(){
+  const mp = BT.mp;
+  if(!mp) return BT.mpErr ? `<p class="bk-msg">${esc(BT.mpErr)}</p>` : `<div class="bk-cube wait" aria-hidden="true"></div><span class="bk-div" aria-hidden="true"></span>${Array.from({ length:3 }, () => `<div class="bk-cube ghost" aria-hidden="true"></div>`).join("")}`;
+  const nx = mp.pending && mp.pending.next;
+  const pend = `<div class="bk-cube wait" aria-label="다음 블록 예상"><b>다음 블록</b><span>${nx && num(nx.median) ? `~${bFee(nx.median)} sat/vB` : mp.fees && num(mp.fees.high) ? `~${bFee(mp.fees.high)} sat/vB` : ""}</span><span>${nx && num(nx.n) ? `${bInt(nx.n)}건` : mp.pending && num(mp.pending.count) ? `대기 ${bInt(mp.pending.count)}건` : ""}</span><span>약 10분 후</span></div>`;
+  return pend + `<span class="bk-div" aria-hidden="true"></span>` + mp.blocks.slice(0, 15).map(b => `<a class="bk-cube" href="https://blockstream.info/block-height/${b.height}" target="_blank" rel="noopener noreferrer" aria-label="블록 ${b.height}"><b>${b.height}</b><span>${num(b.size) ? (b.size / 1e6).toFixed(2).replace(/0$/, "") + "MB" : ""}</span><span>${esc(b.pool || (num(b.tx) ? bInt(b.tx) + "건" : ""))}</span><span class="ago">${num(b.ts) ? bAgo(b.ts) : ""}</span></a>`).join("");
+}
+function bkFeeHeadHtml(){
+  const p = BT.mp && BT.mp.pending, blocks = p && num(p.vsize) ? Math.max(1, Math.round(p.vsize / 1e6)) : null;
+  const lv = blocks == null ? "" : blocks <= 3 ? "한산" : blocks <= 30 ? "보통" : "혼잡";
+  return `<h3>실시간 트랜잭션 수수료</h3>${blocks != null ? `<span class="bk-cong"><i class="dots" aria-hidden="true"><i></i><i></i><i></i></i>${lv} · 약 <b>${bInt(blocks)}</b> 블록 대기</span>` : ""}`;
+}
+function bkFeesHtml(){
+  const f = (BT.mp && BT.mp.fees) || {};
+  return [["최하위 순위","eco"],["낮은 우선 순위","low"],["중간 우선 순위","mid"],["높은 우선 순위","high"]].map(([l, kk]) => `<div><span>${l}</span><b>${bFee(f[kk])}<small>sat/vB</small></b></div>`).join("");
+}
+function bkHalvingHtml(){
+  const hv = btHalving();
+  return `<div class="bk-hh"><h3>반감기 현황</h3><b>${hv ? (hv.p * 100).toFixed(2) + "%" : "-"}</b></div>
+    <div class="bk-hbar" role="img" aria-label="${hv ? `반감기 진행 ${(hv.p * 100).toFixed(2)}%` : "불러오는 중"}"><i style="width:${hv ? (hv.p * 100).toFixed(2) : 0}%"></i></div>
+    <div class="bk-hl"><span>현재 <b>${hv ? bInt(hv.h) : "-"}</b> 블록</span><span>다음 반감기까지 <b>${hv ? bInt(hv.remain) : "-"}</b> 블록</span></div>
+    <div class="bk-hl"><span>예상일 <b>${hv ? bYmd(hv.est) : "-"}</b></span>${hv ? `<span>다음 보상 <b>${hv.reward}</b> BTC</span>` : ""}</div>`;
+}
+function btSearch(){
+  const q = (($("#bkQ") || {}).value || "").trim();
+  let path = null;
+  if(/^\d{1,7}$/.test(q)) path = "block-height/" + q;
+  else if(/^0{8}[0-9a-f]{56}$/i.test(q)) path = "block/" + q;
+  else if(/^[0-9a-f]{64}$/i.test(q)) path = "tx/" + q;
+  else if(/^(bc1[02-9ac-hj-np-z]{11,87}|[13][1-9A-HJ-NP-Za-km-z]{25,34})$/i.test(q)) path = "address/" + q;
+  if(!path){ toast(q ? "블록 높이, 트랜잭션 ID, 주소 중 하나를 적어 주세요." : "검색할 내용을 적어 주세요."); return; }
+  window.open("https://blockstream.info/" + path, "_blank", "noopener");
+}
+
+/* convert */
+function bcCalc(){
+  const a = parseFloat(String(BT.conv.amt).replace(/,/g, "")), P = 1 + (parseFloat(BT.conv.prem) || 0) / 100;
+  const krw = num(BT.krw) ? BT.krw * P : null, usd = BT.usd;
+  if(!isFinite(a)) return {};
+  const btc = BT.conv.unit === "BTC" ? a : BT.conv.unit === "SATS" ? a / 1e8 : BT.conv.unit === "KRW" ? (num(krw) && krw > 0 ? a / krw : null) : (num(usd) && usd > 0 ? a / usd : null);
+  return btc == null ? {} : { btc, krw:num(krw) ? btc * krw : null, usd:num(usd) ? btc * usd : null, sats:btc * 1e8 };
+}
+const bcFmtBtc = v => num(v) ? v.toLocaleString("en-US", { maximumFractionDigits:8 }) : "-";
+function bcRows(){
+  const u = BT.conv.unit, keys = u === "BTC" ? ["krw","usd","sats"] : u === "SATS" ? ["krw","usd","btc"] : u === "KRW" ? ["btc","usd","sats"] : ["krw","btc","sats"];
+  const c = bcCalc(), fx = BT.fx;
+  const def = {
+    krw:["KRW(₩):", bInt(c.krw), num(fx) ? `* ₩${bInt(fx)} = 1$` : ""],
+    usd:["USD($):", num(c.usd) ? bFix(c.usd, 2) : "-", num(fx) ? `* 1USD = ₩${bInt(fx)}` : ""],
+    sats:["Sats:", bInt(c.sats), "* 1BTC = 100,000,000 Sats"],
+    btc:["BTC(₿):", bcFmtBtc(c.btc), num(BT.krw) ? `* 1BTC = ₩${bInt(BT.krw)}` : ""]
+  };
+  return keys.map(kk => ({ key:kk, label:def[kk][0], val:def[kk][1], foot:def[kk][2], raw:c[kk] }));
+}
+function bcRowsHtml(){
+  return bcRows().map(r => `<div class="bc-row"><span class="lb">${r.label}</span><b id="bc-${r.key}">${r.val}</b><button type="button" class="bc-copy" data-btcopy="${r.key}" aria-label="${r.label.replace(/[:()₩$₿]/g, "")} 금액 복사">${BT_COPY}</button><p class="ft">${esc(r.foot)}</p></div>`).join("");
+}
+function bcUnitHtml(){
+  const u = (BT_UNITS.find(x => x[0] === BT.conv.unit) || BT_UNITS[0])[1];
+  return `<button type="button" class="bc-unit" data-btmenu="unit" aria-haspopup="menu" aria-expanded="${BT.menu === "unit"}" aria-label="단위 ${u}">${u}${BT_CHEV}</button>
+    ${BT.menu === "unit" ? `<div class="bt-pop end up" role="menu" aria-label="단위">${BT_UNITS.map(([v, l]) => `<button type="button" role="menuitemradio" aria-checked="${BT.conv.unit === v}" data-btunit="${v}">${l}</button>`).join("")}</div>` : ""}`;
+}
+function btConvertHtml(){
+  const v = btLiveParts();
+  return `<section class="bc" aria-label="비트코인 계산기">
+    <div class="bc-strip">
+      <span><i class="bt-b">₿</i><b id="bcK">${v.bcK}</b>${btChg("bcKc", BT.krwPct)}</span>
+      <span><i class="bt-b">₿</i><b id="bcU">${v.bcU}</b>${btChg("bcUc", BT.usdPct)}</span>
+    </div>
+    <div class="bc-rows" id="bcRows">${bcRowsHtml()}</div>
+    <div class="bc-in">
+      <div class="bc-amt">
+        <button type="button" class="bc-x" data-act="bcClear" aria-label="지우기">×</button>
+        <input id="bcAmt" type="text" inputmode="decimal" autocomplete="off" value="${esc(BT.conv.amt)}" aria-label="계산할 금액">
+        <div class="bt-mw end" id="bcUnitWrap">${bcUnitHtml()}</div>
+      </div>
+      <div class="bc-prem">
+        <span class="t">Premium<small title="원화 금액에 프리미엄(%)을 더하거나 빼서 계산해요."><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8"/><path d="M10 9v5M10 6.2v.1"/></svg>P(%):</small></span>
+        <input id="bcPrem" type="text" inputmode="decimal" autocomplete="off" value="${esc(BT.conv.prem)}" aria-label="프리미엄 퍼센트">
+        <button type="button" class="bc-step" data-bcprem="-0.1" aria-label="프리미엄 0.1% 내리기">−</button><button type="button" class="bc-step" data-bcprem="0.1" aria-label="프리미엄 0.1% 올리기">+</button>
+      </div>
+    </div>
+  </section>`;
+}
+function btPaintConvert(){
+  if(BT.tab !== "convert" || !document.getElementById("bcRows")) return;
+  const rows = bcRows(), have = [...document.querySelectorAll("#bcRows [data-btcopy]")].map(b => b.dataset.btcopy).join();
+  if(have !== rows.map(r => r.key).join()){ setH("bcRows", bcRowsHtml()); return; }
+  rows.forEach(r => { setH("bc-" + r.key, r.val); const ft = document.querySelector(`#bc-${r.key} ~ .ft`); if(ft && ft.textContent !== r.foot) ft.textContent = r.foot; });
+}
+function btCopy(key){
+  const r = bcRows().find(x => x.key === key); if(!r || !num(r.raw)) return;
+  const txt = key === "btc" ? String(+r.raw.toFixed(8)) : key === "usd" ? r.raw.toFixed(2) : String(Math.round(r.raw));
+  (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => toast(`${txt} 복사했어요.`), () => toast("복사하지 못했어요."));
+}
+
+/* premium */
+function btPremiumHtml(){
+  const v = btLiveParts(), pt = bTone(v._pr), ex = BT_EX[BT.ex];
+  const pos = num(v._pr) ? Math.max(0, Math.min(100, (v._pr + 10) / 5 * 25)) : 50;
+  return `<section class="bp" aria-label="김치 프리미엄">
+    <p class="bp-eye">KIMCHI PREMIUM</p>
+    <h3 class="bp-ttl">비트코인 한국 프리미엄</h3>
+    <p class="bp-desc">국내외 거래소의 실시간 비트코인 가격과 한국 프리미엄을 확인하세요.</p>
+    <div class="bp-hero"><span class="bp-badge" id="bpBadge" data-tone="${pt}">${v.bpBadge}</span><b class="bp-big" id="bpBig" data-tone="${pt}">${v.bpBig}</b></div>
+    <div class="bp-gauge" aria-hidden="true"><i id="bpMark" style="left:${pos}%"></i></div>
+    <div class="bp-scale" aria-hidden="true"><span>-10%</span><span>0</span><span>+10%</span></div>
+    <div class="bp-table">
+      <div class="bp-r head"><span>구분</span><span>KRW</span><span>USD</span></div>
+      <div class="bp-r"><span><b>한국 가격</b><small>${ex.tag}</small></span><span id="bpKK">${v.bpKK}</span><span id="bpKU">${v.bpKU}</span></div>
+      <div class="bp-r"><span><b>해외 가격</b><small>BINANCE</small></span><span id="bpBK">${v.bpBK}</span><span id="bpBU">${v.bpBU}</span></div>
+      <div class="bp-r spread"><span><b>프리미엄 차이</b><small>SPREAD</small></span><span id="bpDK" data-tone="${bTone(v._dK)}">${v.bpDK}</span><span id="bpDU" data-tone="${bTone(v._dK)}">${v.bpDU}</span></div>
+      <div class="bp-fx"><span><b id="bpFxL">${v.bpFxL}</b><small id="bpFxT">${v.bpFxT}</small></span><span><b id="bpFx">${v.bpFx}</b> KRW</span></div>
+    </div>
+    <p class="bp-note">프리미엄 = 국내 가격 ÷ (바이낸스 가격 × ${BT.fxBasis === "usdt" ? "테더 원화 시세" : "환율"}) − 1 · 기준은 오른쪽 위 톱니바퀴에서 바꿀 수 있어요.</p>
+  </section>`;
+}
+
+/* settings sheet */
+function openBtSet(){ if(OV) endOvKeepHistory(); OV = { kind:"btset" }; renderBtSet(); }
+function renderBtSet(){
+  showOv(`<div class="sheetbox" role="dialog" aria-modal="true" aria-label="비트코인 설정">
+    <div class="sb-head"><span class="ttl">비트코인 설정</span><div class="sp"><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
+    <div class="sb-body"><div class="set">
+      <section><h3>국내 거래소</h3><div class="sv">
+        <div class="seg" role="group" aria-label="국내 거래소">${Object.entries(BT_EX).map(([v, e]) => `<button type="button" data-btex="${v}" aria-pressed="${BT.ex === v}">${e.name}</button>`).join("")}</div>
+        <p class="note">원화 시세와 김치 프리미엄 계산에 써요. 해외 가격은 바이낸스(BTC/USDT)예요.</p>
+      </div></section>
+      <section><h3>프리미엄 환율</h3><div class="sv">
+        <div class="seg" role="group" aria-label="프리미엄 환율 기준"><button type="button" data-btfx="bank" aria-pressed="${BT.fxBasis === "bank"}">은행 환율</button><button type="button" data-btfx="usdt" aria-pressed="${BT.fxBasis === "usdt"}">USDT 시세</button></div>
+        <p class="note">은행 환율은 USD/KRW(Yahoo Finance), USDT 시세는 ${BT_EX[BT.ex].name}의 테더 원화 가격이에요. USDT 기준으로 보면 프리미엄이 보통 더 작게 나와요.</p>
+      </div></section>
+      <section><h3>데이터</h3><div class="sv">
+        <p class="note">시세는 ${BT_EX[BT.ex].name}·바이낸스 공개 실시간 연결, 도미넌스 CoinGecko, 공포·탐욕 지수 Alternative.me, 차트 Binance·blockchain.com, 블록·수수료 mempool.space(안 되면 Blockstream)에서 받아요. 키나 로그인이 필요 없는 공개 정보만 써요.</p>
+      </div></section>
+    </div></div></div>`);
+}
+function btSetEx(ex){
+  if(!BT_EX[ex] || ex === BT.ex) return;
+  BT.ex = ex; BT.krw = BT.krwPct = BT.usdtKrw = null; BT.wsLast.kr = 0; BT.at.rest = 0; BT.toasted = false;
+  btSavePrefs(); btClose("kr"); BT.wsFail.kr = 0; btConnect("kr"); btTick();
+  if(S.view === "bitcoin"){ setH("btBody", btBodyHtml()); bindBtChart(); btPaintLive(); const src = document.querySelector(".bt-src"); if(src) src.textContent = src.textContent.replace(/^시세 \S+?·/, `시세 ${BT_EX[ex].name}·`); }
+}
+function btTile(kind){
+  if(kind === "prem"){ btSetTab("premium"); return; }
+  if(kind === "dom") toast(num(BT.dom) ? `BTC 도미넌스 ${BT.dom.toFixed(1)}% · 전체 암호화폐 시가총액 중 비트코인 비중` : "도미넌스를 불러오는 중이에요.");
+  if(kind === "fx") toast(BT.fxBasis === "usdt" ? `${BT_EX[BT.ex].name} 테더(USDT) 원화 시세` : `은행 기준 USD/KRW${BT.fxAt ? ` · ${bYmd(BT.fxAt)}` : ""}`);
+  if(kind === "fng") toast(num(BT.fng) ? `공포·탐욕 지수 ${BT.fng} · ${BT.fngLabel} (0 극단적 공포 ~ 100 극단적 탐욕)` : "공포·탐욕 지수를 불러오는 중이에요.");
+}
+function btPaste(){
+  (navigator.clipboard && navigator.clipboard.readText ? navigator.clipboard.readText() : Promise.reject())
+    .then(t => { const i = $("#bkQ"); if(i){ i.value = String(t || "").trim(); i.focus(); } })
+    .catch(() => toast("붙여넣기 권한이 없어요. 입력칸을 길게 눌러 붙여넣어 주세요."));
+}
+document.addEventListener("visibilitychange", () => { if(document.visibilityState === "visible") btResume(); else btPause(); });
+window.addEventListener("pagehide", () => { if(BT.on) btSaveSnap(); });
+
 /* ---------- events ---------- */
 function setFilter(key, v){ S.filter[key] = v; if(S.view !== "archive") S.view = "archive"; render(); window.scrollTo({ top:0 }); }
 document.addEventListener("click", ev => {
   if(ev.target.matches && ev.target.matches("[data-ovbg]")){ closeOv(); return; }
+  if(BT.menu && !(ev.target.closest && ev.target.closest(".bt-pop,[data-btmenu]"))){ BT.menu = null; btPaintMenus(); }
   const t = ev.target.closest("button,[data-open]");
   if(!t) return;
   const ds = t.dataset;
@@ -2295,6 +2963,17 @@ document.addEventListener("click", ev => {
     return;
   }
   if(ds.view){ S.view = ds.view; render(); window.scrollTo({ top:0 }); if(S.view === "stocks"){ refreshQuotes(); loadBroker(); } return; }
+  // bitcoin
+  if(ds.bttab){ btSetTab(ds.bttab); return; }
+  if(ds.btmenu){ BT.menu = BT.menu === ds.btmenu ? null : ds.btmenu; btPaintMenus(); return; }
+  if(ds.btmetric){ BT.metric = ds.btmetric; BT.menu = null; btSavePrefs(); btPaintMenus(); btPaintChart(); btLoadChart(); return; }
+  if(ds.btrange){ BT.range = ds.btrange; BT.menu = null; btSavePrefs(); btPaintMenus(); btPaintChart(); btLoadChart(); return; }
+  if(ds.btunit){ BT.conv.unit = ds.btunit; BT.menu = null; btSavePrefs(); btPaintMenus(); btPaintConvert(); const i = $("#bcAmt"); if(i) i.focus(); return; }
+  if(ds.btcopy){ btCopy(ds.btcopy); return; }
+  if(ds.bcprem){ BT.conv.prem = String(Math.round(((parseFloat(BT.conv.prem) || 0) + +ds.bcprem) * 10) / 10); const i = $("#bcPrem"); if(i) i.value = BT.conv.prem; btPaintConvert(); return; }
+  if(ds.bttile){ btTile(ds.bttile); return; }
+  if(ds.btex){ btSetEx(ds.btex); renderBtSet(); return; }
+  if(ds.btfx){ BT.fxBasis = ds.btfx; btSavePrefs(); renderBtSet(); btPaintAll(); return; }
   // stocks
   if(ds.sttab){ S.stockTab = ds.sttab; render(); if(ds.sttab !== "div") refreshQuotes(); return; }
   if(ds.stock){ openStock(ds.stock); return; }
@@ -2329,6 +3008,9 @@ document.addEventListener("click", ev => {
   if(ds.themeSet){ applyTheme(ds.themeSet); renderSettings(); return; }
   switch(ds.act){
     case "new": openEditor(null); break;
+    case "btSet": openBtSet(); break;
+    case "bcClear": { BT.conv.amt = ""; const i = $("#bcAmt"); if(i){ i.value = ""; i.focus(); } btPaintConvert(); break; }
+    case "bkPaste": btPaste(); break;
     case "newOn": openEditor(null, ds.date); break;
     case "stAdd": openStockSearch(); break;
     case "stRefresh": refreshQuotes(true); break;
@@ -2387,6 +3069,7 @@ $("#syncBtn").addEventListener("click", () => { if(S.B && S.B.kind !== "local") 
 document.addEventListener("keydown", ev => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target.tagName);
   if(ev.key === "Escape" && OV){ closeOv(); return; }
+  if(ev.key === "Escape" && BT.menu){ BT.menu = null; btPaintMenus(); return; }
   if(OV && OV.kind === "edit"){
     if((ev.metaKey || ev.ctrlKey) && ev.key === "Enter"){ ev.preventDefault(); if(!OV.busy) saveDraft(); return; }
     if(ev.target.id === "f-tag" && (ev.key === "Enter" || ev.key === ",") && !ev.isComposing){ ev.preventDefault(); syncDraft(); const v = ev.target.value; if(v.trim()){ addTag(v); renderEditor(); const t = $("#f-tag"); if(t) t.focus(); } return; }
@@ -2426,6 +3109,7 @@ document.addEventListener("submit", ev => {
   else if(ev.target.id === "stForm") saveStockForm();
   else if(ev.target.id === "divForm") saveDivForm();
   else if(ev.target.id === "gateForm") gateSubmit(ev.target);
+  else if(ev.target.id === "bkSearch") btSearch();
 });
 document.addEventListener("paste", ev => {
   if(!OV || OV.kind !== "edit") return;
@@ -2437,6 +3121,8 @@ $("#q").addEventListener("input", ev => { clearTimeout(qT); qT = setTimeout(() =
 document.addEventListener("input", ev => {
   const t = ev.target;
   if(t.id === "st-q" && OV && OV.kind === "stsearch") onStockSearchInput(t.value);
+  if(t.id === "bcAmt"){ BT.conv.amt = t.value; btPaintConvert(); }
+  if(t.id === "bcPrem"){ BT.conv.prem = t.value; btPaintConvert(); }
   if(t.id === "dv-amt" && OV && OV.kind === "divform"){ OV.d.amount = t.value; const h = $("#dvKrwHint"); if(h) h.textContent = dvKrwHint(); }
 });
 window.addEventListener("online", () => { updateSyncUI(); pull(); if(S.view === "stocks") refreshQuotes(true); });
