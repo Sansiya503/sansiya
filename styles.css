@@ -379,7 +379,8 @@ img[data-path]:not([src]){visibility:hidden}
 .st-sec-h{display:flex;align-items:center;gap:10px;margin-bottom:6px;min-height:32px}
 .st-sec-h h3{margin:0;font-size:18px;font-weight:600}
 .st-sec-h h3 span{color:var(--ink-3);font-weight:500;margin-left:6px;font-size:15px}
-.st-sec-h .btn{margin-left:auto}
+.st-sec-h > .btn{margin-left:auto}
+.st-sec-h .st-tools .btn{margin-left:0}
 .st-list{display:flex;flex-direction:column}
 .st-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:center;border:0;background:transparent;text-align:left;padding:12px 8px;margin:0 -8px;border-radius:12px;width:calc(100% + 16px);min-height:64px}
 .st-row:hover{background:var(--sunk)}

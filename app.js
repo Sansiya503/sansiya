@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.7.1";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -975,12 +975,12 @@ function targetInfo(s){
 }
 function watchHtml(){
   const list = S.stocks.filter(s => s.watch).sort((a, b) => (a.sort - b.sort) || (a.createdAt - b.createdAt));
-  const head = `<section class="st-hero st-hero-sm"><div class="st-label">관심 종목 ${refreshBtn()}</div></section>`;
+  const head = `<div class="st-sec-h"><h3>관심 종목${list.length ? `<span>${list.length}</span>` : ""}</h3><span class="st-tools">${refreshBtn()}<button class="btn small" type="button" data-act="stAdd">+ 종목 추가</button></span></div>`;
   if(!list.length){
-    return head + `<div class="empty"><h3>관심 종목을 모아 보세요</h3><p>지켜보는 종목을 추가하면 현재가와 오늘 등락, 목표가까지 남은 거리를 한눈에 볼 수 있어요.</p><button class="btn primary" type="button" data-act="stAdd">+ 종목 추가</button></div>`;
+    return `<section class="st-sec st-sec-first">${head}</section><div class="empty"><h3>관심 종목을 모아 보세요</h3><p>지켜보는 종목을 추가하면 현재가와 오늘 등락, 목표가까지 남은 거리를 한눈에 볼 수 있어요.</p><button class="btn primary" type="button" data-act="stAdd">+ 종목 추가</button></div>`;
   }
-  return head + `<section class="st-sec st-sec-first">
-    <div class="st-sec-h"><h3>관심 종목<span>${list.length}</span></h3><button class="btn small" type="button" data-act="stAdd">+ 종목 추가</button></div>
+  return `<section class="st-sec st-sec-first">
+    ${head}
     <div class="st-list">${list.map(s => {
       const q = quoteOf(s);
       const sub = targetInfo(s) || (s.memo ? s.memo.split("\n")[0] : `${codeOf(s.symbol)} · ${exchLabel(s)}`);
