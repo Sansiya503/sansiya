@@ -39,10 +39,13 @@ $clientId = Read-Value '      client_id'
 $clientSecret = Read-Value '      client_secret (붙여넣어도 화면에 안 보여요)' -Secret
 Write-Host ''
 Write-Host '[3/4] 산시야 연결 코드 (산시야 앱 → 설정 → 토스증권 연동 → 연결 코드 만들기)' -ForegroundColor Cyan
+Write-Host '      (이 컴퓨터에서 산시야 앱을 열어 "복사"를 누른 뒤, 여기서 마우스 오른쪽 클릭 또는 Ctrl+V로 붙여넣으세요)'
 while ($true) {
-  $link = Read-Value '      연결 코드 (붙여넣어도 화면에 안 보여요)' -Secret
+  $link = Read-Value '      연결 코드'
   if ($link -match '^ssy_[A-Za-z0-9_\-]{20,}$') { break }
-  Write-Host '      ssy_ 로 시작하는 코드가 아니에요. 앱에서 복사한 코드를 그대로 붙여넣어 주세요.' -ForegroundColor Yellow
+  $head = $link.Substring(0, [Math]::Min(6, $link.Length))
+  Write-Host ("      ssy_ 로 시작하는 코드가 아니에요. 지금 들어간 값: '" + $head + "…' (" + $link.Length + "자). 연결 코드는 ssy_ 로 시작하는 47자예요.") -ForegroundColor Yellow
+  Write-Host '      앱에서 "복사"를 다시 누르고 붙여넣어 주세요. 폰에서 복사했다면 이 컴퓨터의 클립보드에는 없어요.' -ForegroundColor Yellow
 }
 Write-Host ''
 Write-Host '[4/4] 설치하고 첫 동기화를 해 볼게요...' -ForegroundColor Cyan
