@@ -1,6 +1,6 @@
 /* 산시야 service worker — keeps the app usable offline.
  * 수정 후 배포할 때는 아래 VERSION 숫자를 올려 주세요. 그래야 폰에 새 버전이 적용돼요. */
-const VERSION = "sansiya-v1.7.1";
+const VERSION = "sansiya-v1.8.0";
 const SHELL = [
   "./", "./index.html", "./styles.css", "./app.js", "./config.js", "./manifest.webmanifest",
   "./favicon.svg", "./icon-192.png", "./icon-512.png", "./maskable-512.png", "./apple-touch-icon.png"
@@ -37,6 +37,8 @@ self.addEventListener("fetch", event => {
   const req = event.request;
   if(req.method !== "GET") return;
   const url = new URL(req.url);
+  // downloads (the Toss connector kit) always come straight from the network
+  if(url.origin === location.origin && url.pathname.includes("/toss-sync/")) return;
 
   // app pages: network first so updates arrive, cached copy when offline
   if(req.mode === "navigate" && url.origin === location.origin){

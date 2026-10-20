@@ -349,6 +349,18 @@ img[data-path]:not([src]){visibility:hidden}
 /* ---------- stocks (list layout after a familiar brokerage app; colors from 산시야) ---------- */
 .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--ink-3)}
 .st-wrap{max-width:780px;margin:0 auto}
+.st-toss{display:inline-block;vertical-align:2px;margin:0 0 0 6px;padding:0 6px;border-radius:4px;font-size:10.5px;font-weight:600;line-height:17px;letter-spacing:.02em;color:var(--ink-2);background:var(--sunk);border:1px solid var(--line-2)}
+.st-broker{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0 0;font-size:12.5px;color:var(--ink-3)}
+.st-broker .st-toss{margin:0}
+.st-broker.bad{color:var(--danger)}
+.st-tossnote{grid-column:1/-1;display:flex;align-items:center;gap:6px;margin:-4px 0 0;font-size:12.5px;color:var(--ink-3)}
+.st-tossnote .st-toss{margin:0}
+.linkish{border:0;background:none;padding:0;font:inherit;color:inherit;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.codebox{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px dashed var(--accent);border-radius:8px;background:var(--sunk)}
+.codebox code{flex:1;min-width:0;font-family:var(--f-mono);font-size:12.5px;overflow-wrap:anywhere;user-select:all}
+.steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;font-size:13.5px;color:var(--ink-2);line-height:1.55}
+.steps a{color:var(--accent-text)}
+input[readonly]{background:var(--sunk);color:var(--ink-2)}
 .mk-row{display:flex;gap:8px;overflow-x:auto;scroll-snap-type:x proximity;margin:0 0 14px;padding:2px 0 6px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
 .mk-row::-webkit-scrollbar{display:none}
 .mk{flex:0 0 auto;width:146px;scroll-snap-align:start;display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:12px 14px 10px;border:1px solid var(--line);border-radius:16px;background:var(--surface);color:var(--ink);text-align:left;font:inherit;cursor:pointer;transition:border-color .15s}

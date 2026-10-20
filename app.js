@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.7.1";
+const APP_VERSION = "1.8.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -108,7 +108,7 @@ const TABLES = {
     order: ["sort", true],
     from: r => ({ id:r.id, symbol:r.symbol, market:r.market, name:r.name, currency:r.currency || "KRW", watch:!!r.watch,
       qty:+r.qty || 0, avgPrice:+r.avg_price || 0, target:numOrNull(r.target_price), memo:r.memo || "",
-      notes:Array.isArray(r.notes) ? r.notes : [], sort:r.sort || 0,
+      notes:Array.isArray(r.notes) ? r.notes : [], sort:r.sort || 0, broker:r.broker || "", brokerSyncedAt:Date.parse(r.broker_synced_at) || 0,
       createdAt:Date.parse(r.created_at) || 0, updatedAt:Date.parse(r.updated_at) || 0 }),
     to: (s, uid) => ({ id:s.id, user_id:uid, symbol:s.symbol, market:s.market, name:s.name, currency:s.currency || "KRW", watch:!!s.watch,
       qty:+s.qty || 0, avg_price:+s.avgPrice || 0, target_price:numOrNull(s.target), memo:s.memo || "",
@@ -220,6 +220,15 @@ function makeSupabaseBackend(url, key){
       if(error) throw error;
     },
     async deleteRow(table, id){ const { error } = await sb.from(table).delete().eq("id", id); if(error) throw error; },
+    async getBrokerLink(){ const { data, error } = await sb.from("broker_links").select("*").maybeSingle(); if(error) throw error; return data || null; },
+    async setBrokerLink(hash){
+      const row = { user_id:user.id, broker:"toss", token_hash:hash, created_at:new Date().toISOString(), last_sync_at:null, last_status:null, last_error:null, last_ip:null, holdings_count:null, account_tail:null };
+      const { error } = await sb.from("broker_links").upsert(row); if(error) throw error; return row;
+    },
+    async deleteBrokerLink(){
+      const { error } = await sb.from("broker_links").delete().eq("user_id", user.id); if(error) throw error;
+      await sb.from("stocks").update({ broker:null }).eq("broker", "toss");
+    },
     async invoke(body){
       const { data, error } = await sb.functions.invoke("quotes", { body });
       if(error){
@@ -269,6 +278,9 @@ function makeLocalBackend(){
     async fetchRows(table){ net(); return Object.values((await KV.get("local:" + table)) || {}); },
     async upsertRow(table, rec){ net(); const m = (await KV.get("local:" + table)) || {}; m[rec.id] = JSON.parse(JSON.stringify(rec)); await KV.set("local:" + table, m); },
     async deleteRow(table, id){ net(); const m = (await KV.get("local:" + table)) || {}; delete m[id]; await KV.set("local:" + table, m); },
+    async getBrokerLink(){ return (await KV.get("local:brokerLink")) || null; },
+    async setBrokerLink(hash){ const row = { broker:"toss", token_hash:hash, created_at:new Date().toISOString() }; await KV.set("local:brokerLink", row); return row; },
+    async deleteBrokerLink(){ await KV.del("local:brokerLink"); },
     async invoke(body){
       if(window.__sansiyaFakeQuotes) return window.__sansiyaFakeQuotes(body);
       throw new Error("이 기기 저장 모드에서는 시세를 불러올 수 없어요.");
@@ -285,7 +297,7 @@ const S = {
   outbox:[], lastSync:0, lastPull:0, sync:"idle", syncErr:"",
   urls:new Map(), installEvt:null,
   stocks:[], divs:[], quotes:{}, fx:null, quotesAt:0, qLoading:false, qErr:"",
-  stockTab:"hold", divYear:new Date().getFullYear(), hist:{}, market:{},
+  stockTab:"hold", divYear:new Date().getFullYear(), hist:{}, market:{}, broker:undefined,
   holdSort:"value", holdShow:"value", hideAmt:false
 };
 try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; }catch(e){}
@@ -830,6 +842,78 @@ function quoteLine(q, s){
   return `${t ? t + " 기준 · " : ""}${s.market === "KR" ? "한국 시세는 약 20분 늦을 수 있어요." : "시세는 조금 늦을 수 있어요."}`;
 }
 
+/* ---------- stocks: Toss Securities link (read-only holdings sync) ---------- */
+const TOSS_KIT = "toss-sync/sansiya-toss-sync.zip";
+async function loadBroker(){
+  if(!S.B || !S.B.getBrokerLink || !navigator.onLine) return;
+  try{ S.broker = await S.B.getBrokerLink(); }catch(e){ return; }
+  if(OV && OV.kind === "settings") renderSettings();
+  if(S.view === "stocks") render();
+}
+function brokerProblem(L){
+  if(!L || L.last_status !== "error") return "";
+  const ip = L.last_ip ? esc(L.last_ip) : "이 컴퓨터의 IP";
+  const m = {
+    "ip-not-allowed": `토스가 연결 프로그램의 IP(<b>${ip}</b>)를 막았어요. 토스증권 PC 웹 → 설정 → Open API → 허용 IP 관리에 등록해 주세요. 인터넷 공유기를 다시 켜면 IP가 바뀔 수 있어요.`,
+    "invalid-client": "토스 Open API 키가 맞지 않아요. 키를 다시 발급했다면 연결 프로그램을 다시 설치해 주세요.",
+    "no-account": "토스증권 종합매매 계좌를 찾지 못했어요.",
+    "rate-limit": "토스 요청 한도에 잠깐 걸렸어요. 다음 동기화 때 다시 시도해요."
+  }[L.last_error];
+  return m || `토스에서 보유 종목을 읽지 못했어요 (${esc(L.last_error || "알 수 없는 오류")}).`;
+}
+function brokerStatusLine(){
+  const L = S.broker, tossed = S.stocks.filter(x => x.broker === "toss");
+  if(!L && !tossed.length) return "";
+  const when = Math.max(0, ...tossed.map(x => x.brokerSyncedAt || 0), L && L.last_status === "ok" ? Date.parse(L.last_sync_at) || 0 : 0);
+  const prob = brokerProblem(L);
+  return `<p class="st-broker ${prob ? "bad" : ""}"><span class="st-toss">토스</span>${prob ? `연동 확인이 필요해요 · <button type="button" class="linkish" data-act="settings">설정 보기</button>`
+    : when ? `토스증권 보유 종목과 ${esc(fmtAgo(when))} 맞췄어요` : `연결 프로그램을 설치하면 보유 종목이 자동으로 들어와요`}</p>`;
+}
+function randomCode(){
+  const b = new Uint8Array(32); crypto.getRandomValues(b);
+  return "ssy_" + btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+async function sha256Hex(t){
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t));
+  return [...new Uint8Array(d)].map(x => x.toString(16).padStart(2, "0")).join("");
+}
+async function makeBrokerCode(){
+  if(!navigator.onLine){ toast("인터넷에 연결되어 있을 때 만들 수 있어요."); return; }
+  const code = randomCode();
+  try{ S.broker = await S.B.setBrokerLink(await sha256Hex(code)); }
+  catch(e){ toast(/broker_links|relation|schema/i.test(errMsg(e)) ? "서버 준비가 아직 안 됐어요. 잠시 뒤 다시 시도해 주세요." : "연결 코드를 만들지 못했어요: " + errMsg(e)); return; }
+  if(OV && OV.kind === "settings"){ OV.brokerCode = code; OV.brokerConfirm = false; renderSettings(); }
+}
+async function unlinkBroker(){
+  try{ await S.B.deleteBrokerLink(); }catch(e){ toast("연결을 끊지 못했어요: " + errMsg(e)); return; }
+  S.broker = null; S.stocks = S.stocks.map(x => x.broker === "toss" ? { ...x, broker:"" } : x); saveStocks();
+  if(OV && OV.kind === "settings"){ OV.brokerCode = ""; OV.brokerConfirm = false; renderSettings(); }
+  toast("토스증권 연결을 끊었어요. 컴퓨터의 연결 프로그램도 '3-turn-off'로 지워 주세요.");
+}
+function brokerSettingsHtml(){
+  const L = S.broker, code = OV.brokerCode;
+  if(S.B.kind === "local") return `<p class="note">이 기기 저장 모드에서는 쓸 수 없어요.</p>`;
+  if(L === undefined) return `<p class="note">연동 상태를 불러오는 중…</p>`;
+  const steps = `<ol class="steps">
+      <li>컴퓨터에 <b>연결 프로그램</b>을 받아 압축을 풀어요. <a href="${TOSS_KIT}" download>연결 프로그램 받기 (Windows)</a></li>
+      <li>토스증권 PC 웹 → 설정 → Open API에서 <b>키를 발급</b>하고, 아래쪽 <b>허용 IP 관리</b>에 설치 화면이 알려 주는 IP를 등록해요.</li>
+      <li><b>1-install</b>을 더블클릭하고 키와 이 연결 코드를 붙여넣어요.</li></ol>`;
+  if(code) return `<span>연결 코드가 만들어졌어요. 지금 한 번만 보여요.</span>
+      <div class="codebox"><code id="brokerCode">${esc(code)}</code><button class="btn small" type="button" data-act="copyBroker">복사</button></div>
+      ${steps}<p class="note">코드를 잃어버리면 새로 만들면 돼요. 새로 만들면 예전 코드는 바로 막혀요.</p>`;
+  if(!L) return `<span>토스증권 계좌의 보유 종목·수량·평균 단가를 '내 주식'에 자동으로 맞춰요.</span>
+      <p class="note">조회만 해요. 주문은 하지 않아요. 토스 키는 컴퓨터에만 암호화해서 두고, 산시야에는 보유 종목 정보만 와요. 컴퓨터가 켜져 있을 때 30분마다 맞춰요.</p>
+      <div class="acts"><button class="btn small primary" type="button" data-act="brokerCode">연결 코드 만들기</button></div>`;
+  const prob = brokerProblem(L);
+  const ok = L.last_status === "ok";
+  return `<span>${ok ? `연결됨 · 보유 ${L.holdings_count || 0}종목${L.account_tail ? ` · 계좌 ••••${esc(L.account_tail)}` : ""}` : prob ? "연결 확인이 필요해요" : "연결 프로그램을 기다리는 중이에요"}</span>
+      ${L.last_sync_at ? `<p class="note">마지막 소식 ${esc(fmtTime(Date.parse(L.last_sync_at)))}</p>` : `<p class="note">아직 연결 프로그램에서 소식이 없어요. 설치를 마치면 여기에 표시돼요.</p>${steps}`}
+      ${prob ? `<p class="err">${prob}</p>` : ""}
+      ${OV.brokerConfirm ? `<p class="err">연결을 끊으면 연결 코드가 막혀서 더 이상 맞추지 않아요. 이미 들어온 보유 종목은 그대로 남아요.</p>
+        <div class="acts"><button class="btn small danger" type="button" data-act="brokerOffYes">연결 끊기</button><button class="btn small" type="button" data-act="brokerOffNo">취소</button></div>`
+      : `<div class="acts"><button class="btn small" type="button" data-act="brokerCode">새 연결 코드 만들기</button><button class="btn small ghost danger" type="button" data-act="brokerOff">연결 끊기</button></div>`}`;
+}
+
 /* ---------- stocks: market strip (US indices + dollar rate) ---------- */
 const MARKET = [
   ["^IXIC", "나스닥", "NASDAQ Composite", "나스닥 거래소에 상장된 3,000여 종목으로 만든 지수예요. 기술주 비중이 높아요."],
@@ -921,7 +1005,7 @@ function holdRowHtml(s, p){
     right = `<b>${val}</b>${usd}<small class="${tone(p.pl)}">${pl}</small>`;
   }
   return `<button type="button" class="st-row" data-stock="${esc(s.id)}">${avaHtml(s)}
-    <span class="st-main"><b>${esc(s.name)}</b><small>${S.hideAmt ? "" : fmtQty(p.qty) + "주 · "}평균 ${fmtMoney(p.avg, s.currency)}</small></span>
+    <span class="st-main"><b>${esc(s.name)}${s.broker === "toss" ? `<span class="st-toss" title="토스증권에서 자동으로 맞춰요">토스</span>` : ""}</b><small>${S.hideAmt ? "" : fmtQty(p.qty) + "주 · "}평균 ${fmtMoney(p.avg, s.currency)}</small></span>
     <span class="st-right">${right}</span></button>`;
 }
 function holdHtml(){
@@ -940,6 +1024,7 @@ function holdHtml(){
       ${P.hasUS ? `<div><dt>달러 환율</dt><dd>${fxRate() ? fxRate().toLocaleString("ko-KR", { maximumFractionDigits:2 }) + "원" : "-"}</dd></div>` : ""}
     </dl>
     ${P.missing ? `<p class="st-warn">시세를 못 불러온 종목 ${P.missing}개는 평균 단가로 계산했어요.</p>` : ""}
+    ${brokerStatusLine()}
     ${P.hasUS ? `<p class="st-warn">미국 주식은 지금 환율로 원화 환산해요.</p>` : ""}
   </section>`;
   const sorters = {
@@ -1084,7 +1169,7 @@ function stockParts(s){
     <div class="st-chg ${tone(q && q.change)}"><span class="st-muted0">어제보다</span> ${q && num(q.change) ? `${fmtMoney(q.change, cur, true)}${wonOf(q.change, cur) ? ` · ${wonOf(q.change, cur, true)}` : ""} (${fmtPct(q.changePct)})` : "시세 없음"}</div>
     <p class="st-note">${quoteLine(q, s)}${cur === "USD" && fxRate() ? ` · 원화는 지금 환율 ${fxRate().toLocaleString("ko-KR", { maximumFractionDigits:2 })}원으로 계산해요.` : ""}</p>`;
   const krw = (v, sign) => cur === "USD" && num(toKRW(v, cur)) ? `<small>${my(toKRW(v, cur), "KRW", sign)}</small>` : "";
-  const pos = p.qty > 0 ? `<h4 class="st-h4">내 주식</h4><dl class="st-grid">
+  const pos = p.qty > 0 ? `<h4 class="st-h4">내 주식${s.broker === "toss" ? `<span class="st-toss" title="토스증권에서 자동으로 맞춰요">토스</span>` : ""}</h4><dl class="st-grid">
       <div><dt>보유 수량</dt><dd>${S.hideAmt ? "••" : fmtQty(p.qty)}주</dd></div>
       <div><dt>1주 평균금액</dt><dd>${fmtMoney(p.avg, cur)}${cur === "USD" && wonOf(p.avg, cur) ? `<small>${wonOf(p.avg, cur)}</small>` : ""}</dd></div>
       <div><dt>총 금액</dt><dd>${my(p.value != null ? p.value : p.cost, cur)}${krw(p.value != null ? p.value : p.cost)}</dd></div>
@@ -1130,7 +1215,7 @@ function stockFootHtml(s){
   if(OV.confirm === "unwatch") return `<div class="confirm">보유 수량이 없어서 관심에서 빼면 목록에서 지워져요. 노트도 함께 지워져요. <button class="btn small danger" type="button" data-act="stDelYes">빼기</button><button class="btn small" type="button" data-act="stDelNo">취소</button></div>`;
   return `<button type="button" class="st-heart" data-act="stWatch" aria-pressed="${!!s.watch}" aria-label="${s.watch ? "관심 종목에서 빼기" : "관심 종목에 추가"}">${HEART}</button>
     <button class="btn" type="button" data-act="divAdd" data-for="${esc(s.id)}">배당 기록</button>
-    <button class="btn primary" type="button" data-act="stEdit">${s.qty > 0 ? "수량·단가 수정" : "보유 수량 입력"}</button>`;
+    <button class="btn primary" type="button" data-act="stEdit">${s.broker === "toss" ? "메모·목표가 수정" : s.qty > 0 ? "수량·단가 수정" : "보유 수량 입력"}</button>`;
 }
 function toggleWatch(){
   const s = S.stocks.find(x => x.id === OV.id); if(!s) return;
@@ -1328,7 +1413,7 @@ function openStockForm(base, id){
   OV = { kind:"stform", id:s ? s.id : null, err:"", d:{
     symbol:src.symbol, market:src.market, currency:src.currency || (src.market === "US" ? "USD" : "KRW"), name:src.name,
     watch: s ? s.watch : true, qty: s && s.qty ? String(s.qty) : "", avgPrice: s && s.avgPrice ? String(s.avgPrice) : "",
-    target: s && num(s.target) ? String(s.target) : "", memo: s ? s.memo : "" } };
+    target: s && num(s.target) ? String(s.target) : "", memo: s ? s.memo : "", toss: !!(s && s.broker === "toss") } };
   renderStockForm();
   if(!quoteOf(OV.d)) refreshQuotes(true, [OV.d.symbol]);
 }
@@ -1353,8 +1438,9 @@ function renderStockForm(){
       <div class="fld"><label for="stf-name">이름</label><input id="stf-name" type="text" value="${esc(d.name)}" maxlength="60"></div>
       <label class="st-toggle" for="stf-watch"><span><b>관심 종목에 표시</b><small>관심 탭에서 현재가와 등락을 볼 수 있어요.</small></span><input id="stf-watch" type="checkbox" ${d.watch ? "checked" : ""}></label>
       <div class="frow">
-        <div class="fld"><label for="stf-qty">보유 수량 (주)</label><input id="stf-qty" type="text" inputmode="decimal" value="${esc(d.qty)}" placeholder="없으면 비워 두세요"></div>
-        <div class="fld"><label for="stf-avg">평균 단가 (${unit})</label><input id="stf-avg" type="text" inputmode="decimal" value="${esc(d.avgPrice)}" placeholder="${d.currency === "USD" ? "예: 182.50" : "예: 61000"}"></div>
+        <div class="fld"><label for="stf-qty">보유 수량 (주)</label><input id="stf-qty" type="text" inputmode="decimal" value="${esc(d.qty)}" placeholder="없으면 비워 두세요" ${d.toss ? "readonly" : ""}></div>
+        <div class="fld"><label for="stf-avg">평균 단가 (${unit})</label><input id="stf-avg" type="text" inputmode="decimal" value="${esc(d.avgPrice)}" placeholder="${d.currency === "USD" ? "예: 182.50" : "예: 61000"}" ${d.toss ? "readonly" : ""}></div>
+        ${d.toss ? `<p class="note st-tossnote"><span class="st-toss">토스</span>수량과 평균 단가는 토스증권 계좌에서 자동으로 맞춰요.</p>` : ""}
       </div>
       <div class="fld"><label for="stf-target">목표가 (${unit}, 선택)</label><input id="stf-target" type="text" inputmode="decimal" value="${esc(d.target)}"></div>
       <div class="fld"><label for="stf-memo">메모 (선택)</label><textarea id="stf-memo" rows="3" placeholder="이 종목을 보는 이유, 매수 계획 같은 것">${esc(d.memo)}</textarea></div>
@@ -1381,7 +1467,9 @@ function saveStockForm(){
   const now = Date.now();
   const rec = { id:old ? old.id : uuid(), symbol:d.symbol, market:d.market, name:d.name.trim(), currency:d.currency, watch:d.watch,
     qty, avgPrice:qty ? avg : (avg || 0), target, memo:d.memo.trim(), notes:old ? old.notes || [] : [],
-    sort:old ? old.sort : Math.max(0, ...S.stocks.map(s => s.sort || 0)) + 1, createdAt:old ? old.createdAt : now, updatedAt:now };
+    sort:old ? old.sort : Math.max(0, ...S.stocks.map(s => s.sort || 0)) + 1, createdAt:old ? old.createdAt : now, updatedAt:now,
+    broker:old ? old.broker || "" : "", brokerSyncedAt:old ? old.brokerSyncedAt || 0 : 0 };
+  if(old && old.broker === "toss"){ rec.qty = old.qty; rec.avgPrice = old.avgPrice; }
   putStock(rec);
   if(!old) S.stockTab = qty > 0 ? "hold" : "watch";
   render();
@@ -1689,7 +1777,7 @@ function saveCats(cats){
 }
 
 /* settings */
-function openSettings(){ if(OV) endOvKeepHistory(); OV = { kind:"settings", confirmOut:false, confirmDrop:false }; renderSettings(); }
+function openSettings(){ if(OV) endOvKeepHistory(); OV = { kind:"settings", confirmOut:false, confirmDrop:false, brokerCode:"", brokerConfirm:false }; renderSettings(); loadBroker(); }
 function themeNow(){ try{ return localStorage.getItem("sansiya-theme") || "system"; }catch(e){ return "system"; } }
 function renderSettings(){
   const local = S.B.kind === "local";
@@ -1719,6 +1807,7 @@ function renderSettings(){
         </div>
       </div></section>
       <section><h3>분야</h3><div class="sv"><div class="acts"><button class="btn small" type="button" data-act="cats">분야 관리 열기</button></div></div></section>
+      <section><h3>토스증권 연동</h3><div class="sv">${brokerSettingsHtml()}</div></section>
       <section><h3>백업</h3><div class="sv">
         <p class="note">기록 전체를 JSON 파일로 내려받거나, 백업 파일·이전 산시야(Claude 버전)의 백업을 가져올 수 있어요. 사진은 파일에 들어가지 않아요.</p>
         <div class="acts"><button class="btn small" type="button" data-act="export">JSON 내보내기</button>
@@ -1740,7 +1829,7 @@ async function signOut(){
 }
 function resetState(){
   S.uid = null; S.email = ""; S.entries = []; S.loaded = false; S.outbox = []; S.lastSync = 0; S.urls = new Map(); S.syncErr = ""; S.sync = "idle"; S.cats = DEFAULT_CATS.slice();
-  S.stocks = []; S.divs = []; S.quotes = {}; S.fx = null; S.quotesAt = 0; S.qErr = ""; S.qLoading = false; S.hist = {}; S.market = {};
+  S.stocks = []; S.divs = []; S.quotes = {}; S.fx = null; S.quotesAt = 0; S.qErr = ""; S.qLoading = false; S.hist = {}; S.market = {}; S.broker = undefined;
 }
 function onSignedOut(){
   if(!S.uid) return;
@@ -2001,7 +2090,7 @@ document.addEventListener("click", ev => {
     else if(ds.gate === "forgot") forgotPassword();
     return;
   }
-  if(ds.view){ S.view = ds.view; render(); window.scrollTo({ top:0 }); if(S.view === "stocks") refreshQuotes(); return; }
+  if(ds.view){ S.view = ds.view; render(); window.scrollTo({ top:0 }); if(S.view === "stocks"){ refreshQuotes(); loadBroker(); } return; }
   // stocks
   if(ds.sttab){ S.stockTab = ds.sttab; render(); if(ds.sttab !== "div") refreshQuotes(); return; }
   if(ds.stock){ openStock(ds.stock); return; }
@@ -2056,6 +2145,11 @@ document.addEventListener("click", ev => {
     case "delNo": OV.confirm = false; renderDetail(); break;
     case "delYes": deleteEntry(OV.id); break;
     case "cats": openCats(); break;
+    case "brokerCode": makeBrokerCode(); break;
+    case "brokerOff": OV.brokerConfirm = true; renderSettings(); break;
+    case "brokerOffNo": OV.brokerConfirm = false; renderSettings(); break;
+    case "brokerOffYes": unlinkBroker(); break;
+    case "copyBroker": { const c = OV.brokerCode || ""; (navigator.clipboard ? navigator.clipboard.writeText(c) : Promise.reject()).then(() => toast("연결 코드를 복사했어요."), () => { const el = $("#brokerCode"); if(el){ const r = document.createRange(); r.selectNodeContents(el); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); } toast("코드를 길게 눌러 복사해 주세요."); }); break; }
     case "settings": openSettings(); break;
     case "clear": S.filter = { cat:"all", type:"all", tag:null, q:"" }; $("#q").value = ""; render(); break;
     case "clearEx": clearExamples(); break;
