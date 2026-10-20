@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.9.4";
+const APP_VERSION = "1.10.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -1116,7 +1116,7 @@ function renderIndexDetail(){
   bindChart();
 }
 
-/* ---------- stocks: allocation donut ---------- */
+/* ---------- stocks: allocation (donut + list, in the style of an asset-mix card) ---------- */
 // contrasting colours that go around the ring in an order checked for colour-blind and normal vision
 // (every neighbouring pair, both themes); the biggest holding is always blue. Hex values live in styles.css.
 const DONUT_RINGS = {
@@ -1124,158 +1124,63 @@ const DONUT_RINGS = {
   5:["blue", "pink", "green", "violet", "red"], 6:["blue", "aqua", "violet", "green", "cyan", "red"],
   7:["blue", "aqua", "violet", "red", "cyan", "green", "pink"]
 };
-const DONUT = DONUT_RINGS[7].map(n => `var(--dn-${n})`);
-function ringColours(sl, best){
-  const ring = best.slices, n = ring.filter(x => !x.other).length, pal = DONUT_RINGS[Math.min(7, Math.max(1, n))];
-  let p0 = ring.findIndex(x => x.i === 0); if(p0 < 0) p0 = 0;
-  let k = 0;
-  for(let j = 0; j < ring.length; j++){
-    const x = ring[(p0 + j) % ring.length];
-    x.color = x.other ? "var(--donut-other)" : `var(--dn-${pal[k++ % pal.length]})`;
-    sl[x.i].color = x.color;
-  }
-}
+// biggest first, clockwise from 12 o'clock; past the 7th holding the rest share one grey "기타" slice
 function allocSlices(P){
-  const rows = P.rows.map(({ s, p }) => ({ name:s.name, v:p.valueKRW || 0, ids:[s.id] })).filter(r => r.v > 0);
+  const rows = P.rows.map(({ s, p }) => ({ name:s.name, v:p.valueKRW || 0, ids:[s.id] })).filter(r => r.v > 0).sort((a, b) => b.v - a.v);
   let sl = rows;
-  if(rows.length > 7){
-    const rest = rows.slice(6);
-    sl = [...rows.slice(0, 6), { name:`기타 ${rest.length}종목`, v:rest.reduce((a, r) => a + r.v, 0), ids:rest.flatMap(r => r.ids), other:true }];
+  if(rows.length > 8){
+    const rest = rows.slice(7);
+    sl = [...rows.slice(0, 7), { name:"기타", count:rest.length, v:rest.reduce((a, r) => a + r.v, 0), ids:rest.flatMap(r => r.ids), other:true }];
   }
-  const tot = sl.reduce((a, r) => a + r.v, 0) || 1;
-  sl.forEach((r, i) => { r.pct = r.v / tot * 100; r.color = r.other ? "var(--donut-other)" : DONUT[i]; });
+  const tot = sl.reduce((a, r) => a + r.v, 0) || 1, pal = DONUT_RINGS[Math.min(7, sl.filter(x => !x.other).length) || 1];
+  let k = 0;
+  sl.forEach(r => { r.pct = r.v / tot * 100; r.color = r.other ? "var(--donut-other)" : `var(--dn-${pal[k++]})`; });
   return sl;
 }
-const DONUT_MEMO = new Map();
-const DG = { W:440, H:280, cx:220, cy:140, R:104, r:60, GAP:18 };
-// places slices and labels so every leader line is one straight horizontal stroke (memoised by the slice shares)
-function donutLayout(sl){
-  const { H, cx, cy, R, r, GAP } = DG, TAU = Math.PI * 2;
-  const angOf = (x, y) => { const a = Math.atan2(x - cx, cy - y); return a < 0 ? a + TAU : a; };
-  const inSlice = (s, px, py) => { const dx = px - cx, dy = py - cy, rr = Math.hypot(dx, dy); if(rr < r + 1 || rr > R - 1) return false;
-    return (angOf(px, py) - s.a0 + TAU * 2) % TAU <= s.a1 - s.a0; };
-  // where on the slice a horizontal line at height y can start (closest to the label side)
-  // the line must leave the slice through its outer edge, so it never runs over a neighbouring slice
-  const dotAt = (s, y) => {
-    const dy = y - cy; if(Math.abs(dy) > R - 4) return null;
-    const ex = cx + s.side * Math.sqrt((R - 4) ** 2 - dy * dy);
-    if(!inSlice(s, ex, y)) return null;
-    // also clear of the neighbours where the line crosses the outer rim (with a little margin for the gap)
-    const ox = cx + s.side * Math.sqrt(Math.max(0, (R + 1) ** 2 - dy * dy)), oa = (angOf(ox, y) - s.a0 + TAU * 2) % TAU;
-    if(Math.abs(dy) > R || oa < 0.02 || oa > s.a1 - s.a0 - 0.02) return null;
-    let len = 0; while(len < 14 && inSlice(s, ex - s.side * (len + 1), y)) len++;
-    return [ex - s.side * Math.max(2, len), y];
-  };
-  const layout = (order, off, flips) => {
-  let a0 = off, fk = 0;
-  const slices = order.map(i => {
-    const x = sl[i], a1 = a0 + x.pct / 100 * TAU, mid = (a0 + a1) / 2, s = { ...x, i, a0, a1, mid, side:Math.sin(mid) >= 0 ? 1 : -1 };
-    // slices near 12 or 6 o'clock may put their label on either side
-    if(Math.abs(Math.sin(mid)) < 0.57){ if(flips >> fk & 1) s.side = -s.side; fk++; }
-    a0 = a1; return s;
-  });
-  // the heights this slice covers on its own side, and the height its label would like
-  slices.forEach(s => {
-    let lo = 1e9, hi = -1e9;
-    for(let t = 0; t <= 40; t++){ const a = s.a0 + (s.a1 - s.a0) * t / 40; if(Math.sin(a) * s.side < -1e-6) continue;
-      const y = cy - (R - 4) * Math.cos(a); lo = Math.min(lo, y); hi = Math.max(hi, y); }
-    if(lo > hi){ lo = hi = cy - (r + R) / 2 * Math.cos(s.mid); }
-    s.lo = lo + 1.5; s.hi = Math.max(lo + 1.5, hi - 1.5); s.want = Math.min(s.hi, Math.max(s.lo, cy - (r + R) / 2 * Math.cos(s.mid)));
-  });
-  for(const side of [1, -1]){
-    const L = slices.filter(s => s.side === side).sort((a, b) => a.want - b.want);
-    L.forEach((s, k) => { s.y = k ? Math.min(Math.max(s.want, L[k - 1].y + GAP), Math.max(s.hi, L[k - 1].y + GAP)) : s.want; });
-    for(let k = L.length - 2; k >= 0; k--) if(L[k].y > L[k + 1].y - GAP) L[k].y = Math.max(L[k].lo, L[k + 1].y - GAP);
-    for(let k = 1; k < L.length; k++) if(L[k].y < L[k - 1].y + GAP) L[k].y = L[k - 1].y + GAP;
-    L.forEach(s => { s.y = Math.max(16, Math.min(H - 6, s.y)); });
-  }
-  let bent = 0, moved = 0;
-  slices.forEach(s => { s.dot = dotAt(s, s.y); if(!s.dot) bent++; moved += Math.abs(s.y - s.want); });
-  return { slices, score:bent * 1e4 + moved, flippable:fk };
-  };
-  // try the slices in size order and with big/small taking turns, at every 5° rotation; keep the tidiest
-  const sorted = sl.map((_, i) => i), turns = [];
-  for(let i = 0, j = sl.length - 1; i <= j; i++, j--){ turns.push(i); if(j !== i) turns.push(j); }
-  const memoKey = sl.map(x => x.name + ":" + x.pct.toFixed(1)).join("|");
-  let best = DONUT_MEMO.get(memoKey) ? layout(...DONUT_MEMO.get(memoKey)) : null;
-  if(!best) search: for(const order of [sorted, turns]) for(let deg = 0; deg < 360; deg += 3){
-    const off = deg / 180 * Math.PI, L0 = layout(order, off, 0);
-    if(!best || L0.score < best.score - 0.5){ best = L0; best.args = [order, off, 0]; }
-    for(let m = 1; m < 1 << Math.min(L0.flippable, 3); m++){ const L = layout(order, off, m); if(L.score < best.score - 0.5){ best = L; best.args = [order, off, m]; } }
-    if(best.score < 12) break search;
-  }
-  if(best.args){ if(DONUT_MEMO.size > 30) DONUT_MEMO.clear(); DONUT_MEMO.set(memoKey, best.args); }
-  return best;
-}
-// when there is no room for straight lines, the two smallest slices join "기타" (the bars still list every stock)
-function donutPlan(P){
-  let sl = allocSlices(P);
-  for(let guard = 0; guard < 6; guard++){
-    const best = sl.length ? donutLayout(sl) : null;
-    if(!best || best.score < 1e4){ if(best) ringColours(sl, best); return { sl, best }; }
-    const small = sl.filter(x => !x.other && x.pct < 3).sort((a, b) => a.pct - b.pct);
-    const other = sl.find(x => x.other);
-    if(small.length < (other ? 1 : 2)){ ringColours(sl, best); return { sl, best }; }
-    const fold = other ? [other, small[0]] : small.slice(0, 2);
-    const rest = sl.filter(x => !fold.includes(x));
-    const ids = fold.flatMap(x => x.ids), v = fold.reduce((a, x) => a + x.v, 0);
-    sl = [...rest, { name:`기타 ${ids.length}종목`, v, ids, other:true }];
-    const tot = sl.reduce((a, x) => a + x.v, 0) || 1;
-    let k = 0; sl.forEach(x => { x.pct = x.v / tot * 100; x.color = x.other ? "var(--donut-other)" : DONUT[k++]; });
-  }
-  const best = donutLayout(sl); ringColours(sl, best);
-  return { sl, best };
-}
-function donutSvg(P, plan){
-  const { sl, best } = plan; if(!sl.length || !best) return "";
-  const { W, H, cx, cy, R, r } = DG;
-  const f = n => n.toFixed(1);
-  const slices = best.slices;
-  const short = t => t.length > 8 ? t.slice(0, 7) + "…" : t;
-  const paths = slices.map(s => {
-    let d;
-    if(sl.length === 1) d = `M${f(cx)} ${f(cy - R)}A${R} ${R} 0 1 1 ${f(cx - 0.01)} ${f(cy - R)}ZM${f(cx)} ${f(cy - r)}A${r} ${r} 0 1 0 ${f(cx + 0.01)} ${f(cy - r)}Z`;
+function donutSvg(P, sl){
+  const S0 = 240, c = S0 / 2, R = 112, r = 74, TAU = Math.PI * 2, f = n => n.toFixed(2);
+  const pt = (rad, a) => [c + rad * Math.sin(a), c - rad * Math.cos(a)];
+  let a0 = 0;
+  const paths = sl.map((x, i) => {
+    const a1 = a0 + x.pct / 100 * TAU; let d;
+    if(sl.length === 1) d = `M${c} ${c - R}A${R} ${R} 0 1 1 ${f(c - 0.01)} ${c - R}ZM${c} ${c - r}A${r} ${r} 0 1 0 ${f(c + 0.01)} ${c - r}Z`;
     else {
-      const pt = (rad, a) => [cx + rad * Math.sin(a), cy - rad * Math.cos(a)];
-      const [x0, y0] = pt(R, s.a0), [x1, y1] = pt(R, s.a1), [x2, y2] = pt(r, s.a1), [x3, y3] = pt(r, s.a0), large = s.a1 - s.a0 > Math.PI ? 1 : 0;
+      const [x0, y0] = pt(R, a0), [x1, y1] = pt(R, a1), [x2, y2] = pt(r, a1), [x3, y3] = pt(r, a0), large = a1 - a0 > Math.PI ? 1 : 0;
       d = `M${f(x0)} ${f(y0)}A${R} ${R} 0 ${large} 1 ${f(x1)} ${f(y1)}L${f(x2)} ${f(y2)}A${r} ${r} 0 ${large} 0 ${f(x3)} ${f(y3)}Z`;
     }
-    return `<path class="ds" data-slice="${s.i}" d="${d}" fill="${s.color}" stroke="var(--bg)" stroke-width="2" stroke-linejoin="round"/>`;
-  }).join("");
-  const labels = slices.map(s => {
-    const ex = s.side > 0 ? W - 4 : 4;
-    let dot = s.dot, line;
-    if(dot) line = `M${f(dot[0])} ${f(s.y)}H${ex}`;
-    else { // no room at that height: a short step, then the same straight line
-      const m = (r + R) / 2; dot = [cx + m * Math.sin(s.mid), cy - m * Math.cos(s.mid)];
-      const bx = cx + s.side * (R + 10);
-      line = Math.abs(dot[1] - s.y) < 1 ? `M${f(dot[0])} ${f(s.y)}H${ex}` : `M${f(dot[0])} ${f(dot[1])}L${f(bx)} ${f(s.y)}H${ex}`;
-    }
-    return `<g class="dl" data-slice="${s.i}"><path d="${line}" fill="none" stroke="var(--ink-2)" stroke-width="1"/>
-      <circle cx="${f(dot[0])}" cy="${f(dot[1])}" r="2.6" fill="var(--ink)"/>
-      <text x="${ex}" y="${f(s.y - 6)}" text-anchor="${s.side > 0 ? "end" : "start"}" class="dn">${esc(short(s.name))}<tspan class="dp" dx="6">${s.pct.toFixed(1)}%</tspan></text></g>`;
+    a0 = a1;
+    return `<path class="ds" data-slice="${i}" d="${d}" fill="${x.color}" stroke="var(--surface)" stroke-width="2" stroke-linejoin="round"/>`;
   }).join("");
   const summary = sl.map(x => `${x.name} ${x.pct.toFixed(1)}%`).join(", ");
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="종목 비중: ${esc(summary)}">
-    ${paths}${labels}
-    <text x="${cx}" y="${cy - 4}" text-anchor="middle" class="dc1" id="dcTop">보유 ${P.rows.length}종목</text>
-    <text x="${cx}" y="${cy + 16}" text-anchor="middle" class="dc2" id="dcBig">${esc(S.hideAmt ? "••••원" : fmtShort(P.value) + "원")}</text>
+  return `<svg viewBox="0 0 ${S0} ${S0}" role="img" aria-label="종목 비중: ${esc(summary)}">${paths}
+    <text x="${c}" y="${c - 8}" text-anchor="middle" class="dc1" id="dcTop">평가금액</text>
+    <text x="${c}" y="${c + 18}" text-anchor="middle" class="dc2" id="dcBig">${esc(S.hideAmt ? "••••원" : fmtShort(P.value) + "원")}</text>
   </svg>`;
 }
+function allocHtml(P){
+  const sl = allocSlices(P); if(!sl.length) return "";
+  const rows = sl.map((x, i) => {
+    const inner = `<i style="background:${x.color}"></i><span class="nm">${esc(x.name)}${x.other ? `<small>${x.count}종목</small>` : ""}</span><b>${x.pct.toFixed(1)}%</b>`;
+    return x.other ? `<div class="st-lg" data-slice="${i}">${inner}</div>`
+      : `<button type="button" class="st-lg" data-slice="${i}" data-stock="${esc(x.ids[0])}">${inner}</button>`;
+  }).join("");
+  return `<section class="st-sec">
+    <div class="st-sec-h"><h3>종목 비중</h3></div>
+    <div class="st-mix" id="stDonut"><div class="st-mix-d">${donutSvg(P, sl)}</div><div class="st-mix-l">${rows}</div></div>
+  </section>`;
+}
+// hovering (or touching) a slice or a list row lights up both and shows that holding in the middle
 function bindDonut(root){
   const box = root && root.querySelector("#stDonut"); if(!box) return;
-  const svg = box.querySelector("svg"), P = portfolio(), sl = donutPlan(P).sl;
-  const top = svg.querySelector("#dcTop"), big = svg.querySelector("#dcBig");
-  const reset = () => { svg.classList.remove("hl"); svg.querySelectorAll(".on").forEach(e => e.classList.remove("on"));
-    top.textContent = `보유 ${P.rows.length}종목`; big.textContent = S.hideAmt ? "••••원" : fmtShort(P.value) + "원"; };
-  const show = i => { const x = sl[i]; if(!x) return; reset(); svg.classList.add("hl");
-    svg.querySelectorAll(`[data-slice="${i}"]`).forEach(e => e.classList.add("on"));
-    top.textContent = x.name.length > 8 ? x.name.slice(0, 7) + "…" : x.name; big.textContent = x.pct.toFixed(1) + "%"; };
-  svg.querySelectorAll("[data-slice]").forEach(e => {
-    e.addEventListener("pointerenter", () => show(+e.dataset.slice));
-    e.addEventListener("pointerdown", () => show(+e.dataset.slice));
-  });
-  svg.addEventListener("pointerleave", reset);
+  const P = portfolio(), sl = allocSlices(P), top = box.querySelector("#dcTop"), big = box.querySelector("#dcBig");
+  const reset = () => { box.classList.remove("hl"); box.querySelectorAll(".on").forEach(e => e.classList.remove("on"));
+    top.textContent = "평가금액"; big.textContent = S.hideAmt ? "••••원" : fmtShort(P.value) + "원"; };
+  const show = i => { const x = sl[i]; if(!x) return; reset(); box.classList.add("hl");
+    box.querySelectorAll(`[data-slice="${i}"]`).forEach(e => e.classList.add("on"));
+    top.textContent = x.name.length > 9 ? x.name.slice(0, 8) + "…" : x.name; big.textContent = x.pct.toFixed(1) + "%"; };
+  box.querySelectorAll("[data-slice]").forEach(e => e.addEventListener("pointerenter", () => show(+e.dataset.slice)));
+  box.querySelectorAll(".ds").forEach(e => e.addEventListener("pointerdown", () => show(+e.dataset.slice)));
+  box.addEventListener("pointerleave", reset);
 }
 
 /* ---------- stocks: main view ---------- */
@@ -1344,16 +1249,7 @@ function holdHtml(){
   const list = `<section class="st-sec">
     <div class="st-sec-h"><h3>보유 종목<span>${P.rows.length}</span></h3><button class="btn small" type="button" data-act="stAdd">+ 종목 추가</button></div>
     ${ctrl}<div class="st-list">${body}</div>${hidHtml}</section>`;
-  const plan = P.rows.length > 1 && P.value > 0 ? donutPlan(P) : { sl:[], best:null }, sl = plan.sl;
-  const colorOf = id => (sl.find(x => x.ids.includes(id)) || {}).color || "var(--donut-other)";
-  const alloc = P.rows.length > 1 && P.value > 0 ? `<section class="st-sec">
-    <div class="st-sec-h"><h3>종목 비중</h3></div>
-    <div class="st-allocwrap">
-      <div class="st-alloc">${P.rows.map(({ s, p }) => { const pct = (p.valueKRW || 0) / P.value * 100;
-        return `<div class="st-al"><span class="nm"><i style="background:${colorOf(s.id)}"></i>${esc(s.name)}</span><span class="tr"><span class="fl" style="width:${Math.max(0, Math.min(100, pct)).toFixed(1)}%"></span></span><span class="pc">${pct.toFixed(1)}%</span></div>`; }).join("")}</div>
-      <div class="st-donut" id="stDonut">${donutSvg(P, plan)}</div>
-    </div>
-  </section>` : "";
+  const alloc = P.rows.length > 1 && P.value > 0 ? allocHtml(P) : "";
   return hero + list + alloc;
 }
 function targetInfo(s){
