@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.9.0";
+const APP_VERSION = "1.9.1";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -1128,50 +1128,124 @@ function allocSlices(P){
   sl.forEach((r, i) => { r.pct = r.v / tot * 100; r.color = r.other ? "var(--donut-other)" : DONUT[i]; });
   return sl;
 }
-function donutSvg(P, sl){
-  if(!sl.length) return "";
-  const W = 440, H = 290, cx = 220, cy = 145, R = 96, r = 54, GAP = 38;
-  const pt = (rad, a) => [cx + rad * Math.sin(a), cy - rad * Math.cos(a)];
+const DONUT_MEMO = new Map();
+const DG = { W:440, H:280, cx:220, cy:140, R:98, r:56, GAP:20 };
+// places slices and labels so every leader line is one straight horizontal stroke (memoised by the slice shares)
+function donutLayout(sl){
+  const { H, cx, cy, R, r, GAP } = DG, TAU = Math.PI * 2;
+  const angOf = (x, y) => { const a = Math.atan2(x - cx, cy - y); return a < 0 ? a + TAU : a; };
+  const inSlice = (s, px, py) => { const dx = px - cx, dy = py - cy, rr = Math.hypot(dx, dy); if(rr < r + 1 || rr > R - 1) return false;
+    return (angOf(px, py) - s.a0 + TAU * 2) % TAU <= s.a1 - s.a0; };
+  // where on the slice a horizontal line at height y can start (closest to the label side)
+  // the line must leave the slice through its outer edge, so it never runs over a neighbouring slice
+  const dotAt = (s, y) => {
+    const dy = y - cy; if(Math.abs(dy) > R - 4) return null;
+    const ex = cx + s.side * Math.sqrt((R - 4) ** 2 - dy * dy);
+    if(!inSlice(s, ex, y)) return null;
+    // also clear of the neighbours where the line crosses the outer rim (with a little margin for the gap)
+    const ox = cx + s.side * Math.sqrt(Math.max(0, (R + 1) ** 2 - dy * dy)), oa = (angOf(ox, y) - s.a0 + TAU * 2) % TAU;
+    if(Math.abs(dy) > R || oa < 0.02 || oa > s.a1 - s.a0 - 0.02) return null;
+    let len = 0; while(len < 14 && inSlice(s, ex - s.side * (len + 1), y)) len++;
+    return [ex - s.side * Math.max(2, len), y];
+  };
+  const layout = (order, off, flips) => {
+  let a0 = off, fk = 0;
+  const slices = order.map(i => {
+    const x = sl[i], a1 = a0 + x.pct / 100 * TAU, mid = (a0 + a1) / 2, s = { ...x, i, a0, a1, mid, side:Math.sin(mid) >= 0 ? 1 : -1 };
+    // slices near 12 or 6 o'clock may put their label on either side
+    if(Math.abs(Math.sin(mid)) < 0.57){ if(flips >> fk & 1) s.side = -s.side; fk++; }
+    a0 = a1; return s;
+  });
+  // the heights this slice covers on its own side, and the height its label would like
+  slices.forEach(s => {
+    let lo = 1e9, hi = -1e9;
+    for(let t = 0; t <= 40; t++){ const a = s.a0 + (s.a1 - s.a0) * t / 40; if(Math.sin(a) * s.side < -1e-6) continue;
+      const y = cy - (R - 4) * Math.cos(a); lo = Math.min(lo, y); hi = Math.max(hi, y); }
+    if(lo > hi){ lo = hi = cy - (r + R) / 2 * Math.cos(s.mid); }
+    s.lo = lo + 1.5; s.hi = Math.max(lo + 1.5, hi - 1.5); s.want = Math.min(s.hi, Math.max(s.lo, cy - (r + R) / 2 * Math.cos(s.mid)));
+  });
+  for(const side of [1, -1]){
+    const L = slices.filter(s => s.side === side).sort((a, b) => a.want - b.want);
+    L.forEach((s, k) => { s.y = k ? Math.min(Math.max(s.want, L[k - 1].y + GAP), Math.max(s.hi, L[k - 1].y + GAP)) : s.want; });
+    for(let k = L.length - 2; k >= 0; k--) if(L[k].y > L[k + 1].y - GAP) L[k].y = Math.max(L[k].lo, L[k + 1].y - GAP);
+    for(let k = 1; k < L.length; k++) if(L[k].y < L[k - 1].y + GAP) L[k].y = L[k - 1].y + GAP;
+    L.forEach(s => { s.y = Math.max(16, Math.min(H - 6, s.y)); });
+  }
+  let bent = 0, moved = 0;
+  slices.forEach(s => { s.dot = dotAt(s, s.y); if(!s.dot) bent++; moved += Math.abs(s.y - s.want); });
+  return { slices, score:bent * 1e4 + moved, flippable:fk };
+  };
+  // try the slices in size order and with big/small taking turns, at every 5° rotation; keep the tidiest
+  const sorted = sl.map((_, i) => i), turns = [];
+  for(let i = 0, j = sl.length - 1; i <= j; i++, j--){ turns.push(i); if(j !== i) turns.push(j); }
+  const memoKey = sl.map(x => x.name + ":" + x.pct.toFixed(1)).join("|");
+  let best = DONUT_MEMO.get(memoKey) ? layout(...DONUT_MEMO.get(memoKey)) : null;
+  if(!best) search: for(const order of [sorted, turns]) for(let deg = 0; deg < 360; deg += 3){
+    const off = deg / 180 * Math.PI, L0 = layout(order, off, 0);
+    if(!best || L0.score < best.score - 0.5){ best = L0; best.args = [order, off, 0]; }
+    for(let m = 1; m < 1 << Math.min(L0.flippable, 3); m++){ const L = layout(order, off, m); if(L.score < best.score - 0.5){ best = L; best.args = [order, off, m]; } }
+    if(best.score < 12) break search;
+  }
+  if(best.args){ if(DONUT_MEMO.size > 30) DONUT_MEMO.clear(); DONUT_MEMO.set(memoKey, best.args); }
+  return best;
+}
+// when there is no room for straight lines, the two smallest slices join "기타" (the bars still list every stock)
+function donutPlan(P){
+  let sl = allocSlices(P);
+  for(let guard = 0; guard < 6; guard++){
+    const best = sl.length ? donutLayout(sl) : null;
+    if(!best || best.score < 1e4) return { sl, best };
+    const small = sl.filter(x => !x.other && x.pct < 3).sort((a, b) => a.pct - b.pct);
+    const other = sl.find(x => x.other);
+    if(small.length < (other ? 1 : 2)) return { sl, best };
+    const fold = other ? [other, small[0]] : small.slice(0, 2);
+    const rest = sl.filter(x => !fold.includes(x));
+    const ids = fold.flatMap(x => x.ids), v = fold.reduce((a, x) => a + x.v, 0);
+    sl = [...rest, { name:`기타 ${ids.length}종목`, v, ids, other:true }];
+    const tot = sl.reduce((a, x) => a + x.v, 0) || 1;
+    let k = 0; sl.forEach(x => { x.pct = x.v / tot * 100; x.color = x.other ? "var(--donut-other)" : DONUT[k++]; });
+  }
+  return { sl, best:donutLayout(sl) };
+}
+function donutSvg(P, plan){
+  const { sl, best } = plan; if(!sl.length || !best) return "";
+  const { W, H, cx, cy, R, r } = DG;
   const f = n => n.toFixed(1);
-  let a0 = 0;
-  const slices = sl.map((x, i) => {
-    const a1 = a0 + x.pct / 100 * Math.PI * 2, mid = (a0 + a1) / 2, large = a1 - a0 > Math.PI ? 1 : 0;
+  const slices = best.slices;
+  const short = t => t.length > 8 ? t.slice(0, 7) + "…" : t;
+  const paths = slices.map(s => {
     let d;
-    if(sl.length === 1){
-      d = `M${f(cx)} ${f(cy - R)}A${R} ${R} 0 1 1 ${f(cx - 0.01)} ${f(cy - R)}ZM${f(cx)} ${f(cy - r)}A${r} ${r} 0 1 0 ${f(cx + 0.01)} ${f(cy - r)}Z`;
-    }else{
-      const [x0, y0] = pt(R, a0), [x1, y1] = pt(R, a1), [x2, y2] = pt(r, a1), [x3, y3] = pt(r, a0);
+    if(sl.length === 1) d = `M${f(cx)} ${f(cy - R)}A${R} ${R} 0 1 1 ${f(cx - 0.01)} ${f(cy - R)}ZM${f(cx)} ${f(cy - r)}A${r} ${r} 0 1 0 ${f(cx + 0.01)} ${f(cy - r)}Z`;
+    else {
+      const pt = (rad, a) => [cx + rad * Math.sin(a), cy - rad * Math.cos(a)];
+      const [x0, y0] = pt(R, s.a0), [x1, y1] = pt(R, s.a1), [x2, y2] = pt(r, s.a1), [x3, y3] = pt(r, s.a0), large = s.a1 - s.a0 > Math.PI ? 1 : 0;
       d = `M${f(x0)} ${f(y0)}A${R} ${R} 0 ${large} 1 ${f(x1)} ${f(y1)}L${f(x2)} ${f(y2)}A${r} ${r} 0 ${large} 0 ${f(x3)} ${f(y3)}Z`;
     }
-    a0 = a1;
-    return { ...x, i, d, mid, side:Math.sin(mid) >= 0 ? 1 : -1, dot:pt((R + r) / 2, mid), elbow:pt(R + 10, mid) };
-  });
-  // keep labels on each side at least GAP apart and inside the picture
-  for(const side of [1, -1]){
-    const L = slices.filter(x => x.side === side).sort((a, b) => a.elbow[1] - b.elbow[1]);
-    let y = -1e9; L.forEach(x => { x.y = Math.max(x.elbow[1], y + GAP); y = x.y; });
-    const over = L.length ? L[L.length - 1].y - (H - 26) : 0;
-    if(over > 0){ L.forEach(x => { x.y -= over; }); y = -1e9; L.forEach(x => { x.y = Math.max(x.y, y + GAP, 22); y = x.y; }); }
-  }
-  const short = t => t.length > 9 ? t.slice(0, 8) + "…" : t;
-  const labels = slices.map(x => {
-    const ex = x.side > 0 ? W - 4 : 4, bx = cx + x.side * (R + 26);
-    return `<g class="dl" data-slice="${x.i}"><polyline points="${f(x.dot[0])},${f(x.dot[1])} ${f(x.elbow[0])},${f(x.elbow[1])} ${f(bx)},${f(x.y)} ${ex},${f(x.y)}" fill="none" stroke="var(--ink-2)" stroke-width="1"/>
-      <circle cx="${f(x.dot[0])}" cy="${f(x.dot[1])}" r="2.6" fill="var(--ink)"/>
-      <text x="${ex}" y="${f(x.y - 6)}" text-anchor="${x.side > 0 ? "end" : "start"}" class="dn">${esc(short(x.name))}</text>
-      <text x="${ex}" y="${f(x.y + 15)}" text-anchor="${x.side > 0 ? "end" : "start"}" class="dp">${x.pct.toFixed(1)}%</text></g>`;
+    return `<path class="ds" data-slice="${s.i}" d="${d}" fill="${s.color}" stroke="var(--bg)" stroke-width="2" stroke-linejoin="round"/>`;
+  }).join("");
+  const labels = slices.map(s => {
+    const ex = s.side > 0 ? W - 4 : 4;
+    let dot = s.dot, line;
+    if(dot) line = `M${f(dot[0])} ${f(s.y)}H${ex}`;
+    else { // no room at that height: a short step, then the same straight line
+      const m = (r + R) / 2; dot = [cx + m * Math.sin(s.mid), cy - m * Math.cos(s.mid)];
+      const bx = cx + s.side * (R + 10);
+      line = Math.abs(dot[1] - s.y) < 1 ? `M${f(dot[0])} ${f(s.y)}H${ex}` : `M${f(dot[0])} ${f(dot[1])}L${f(bx)} ${f(s.y)}H${ex}`;
+    }
+    return `<g class="dl" data-slice="${s.i}"><path d="${line}" fill="none" stroke="var(--ink-2)" stroke-width="1"/>
+      <circle cx="${f(dot[0])}" cy="${f(dot[1])}" r="2.6" fill="var(--ink)"/>
+      <text x="${ex}" y="${f(s.y - 6)}" text-anchor="${s.side > 0 ? "end" : "start"}" class="dn">${esc(short(s.name))}<tspan class="dp" dx="6">${s.pct.toFixed(1)}%</tspan></text></g>`;
   }).join("");
   const summary = sl.map(x => `${x.name} ${x.pct.toFixed(1)}%`).join(", ");
   return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="종목 비중: ${esc(summary)}">
-    ${slices.map(x => `<path class="ds" data-slice="${x.i}" d="${x.d}" fill="${x.color}" stroke="var(--bg)" stroke-width="2" stroke-linejoin="round"/>`).join("")}
-    ${labels}
+    ${paths}${labels}
     <text x="${cx}" y="${cy - 4}" text-anchor="middle" class="dc1" id="dcTop">보유 ${P.rows.length}종목</text>
     <text x="${cx}" y="${cy + 16}" text-anchor="middle" class="dc2" id="dcBig">${esc(S.hideAmt ? "••••원" : fmtShort(P.value) + "원")}</text>
   </svg>`;
 }
 function bindDonut(root){
   const box = root && root.querySelector("#stDonut"); if(!box) return;
-  const svg = box.querySelector("svg"), P = portfolio(), sl = allocSlices(P);
+  const svg = box.querySelector("svg"), P = portfolio(), sl = donutPlan(P).sl;
   const top = svg.querySelector("#dcTop"), big = svg.querySelector("#dcBig");
   const reset = () => { svg.classList.remove("hl"); svg.querySelectorAll(".on").forEach(e => e.classList.remove("on"));
     top.textContent = `보유 ${P.rows.length}종목`; big.textContent = S.hideAmt ? "••••원" : fmtShort(P.value) + "원"; };
@@ -1251,13 +1325,14 @@ function holdHtml(){
   const list = `<section class="st-sec">
     <div class="st-sec-h"><h3>보유 종목<span>${P.rows.length}</span></h3><button class="btn small" type="button" data-act="stAdd">+ 종목 추가</button></div>
     ${ctrl}<div class="st-list">${body}</div>${hidHtml}</section>`;
-  const sl = allocSlices(P), colorOf = id => (sl.find(x => x.ids.includes(id)) || {}).color || "var(--donut-other)";
+  const plan = P.rows.length > 1 && P.value > 0 ? donutPlan(P) : { sl:[], best:null }, sl = plan.sl;
+  const colorOf = id => (sl.find(x => x.ids.includes(id)) || {}).color || "var(--donut-other)";
   const alloc = P.rows.length > 1 && P.value > 0 ? `<section class="st-sec">
     <div class="st-sec-h"><h3>종목 비중</h3></div>
     <div class="st-allocwrap">
       <div class="st-alloc">${P.rows.map(({ s, p }) => { const pct = (p.valueKRW || 0) / P.value * 100;
         return `<div class="st-al"><span class="nm"><i style="background:${colorOf(s.id)}"></i>${esc(s.name)}</span><span class="tr"><span class="fl" style="width:${Math.max(0, Math.min(100, pct)).toFixed(1)}%"></span></span><span class="pc">${pct.toFixed(1)}%</span></div>`; }).join("")}</div>
-      <div class="st-donut" id="stDonut">${donutSvg(P, sl)}</div>
+      <div class="st-donut" id="stDonut">${donutSvg(P, plan)}</div>
     </div>
   </section>` : "";
   return hero + list + alloc;
