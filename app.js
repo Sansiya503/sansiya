@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.8.1";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -108,11 +108,11 @@ const TABLES = {
     order: ["sort", true],
     from: r => ({ id:r.id, symbol:r.symbol, market:r.market, name:r.name, currency:r.currency || "KRW", watch:!!r.watch,
       qty:+r.qty || 0, avgPrice:+r.avg_price || 0, target:numOrNull(r.target_price), memo:r.memo || "",
-      notes:Array.isArray(r.notes) ? r.notes : [], sort:r.sort || 0, broker:r.broker || "", brokerSyncedAt:Date.parse(r.broker_synced_at) || 0,
+      notes:Array.isArray(r.notes) ? r.notes : [], sort:r.sort || 0, hidden:!!r.hidden, broker:r.broker || "", brokerSyncedAt:Date.parse(r.broker_synced_at) || 0,
       createdAt:Date.parse(r.created_at) || 0, updatedAt:Date.parse(r.updated_at) || 0 }),
     to: (s, uid) => ({ id:s.id, user_id:uid, symbol:s.symbol, market:s.market, name:s.name, currency:s.currency || "KRW", watch:!!s.watch,
       qty:+s.qty || 0, avg_price:+s.avgPrice || 0, target_price:numOrNull(s.target), memo:s.memo || "",
-      notes:s.notes || [], sort:s.sort || 0, created_at:isoT(s.createdAt), updated_at:isoT(s.updatedAt) })
+      notes:s.notes || [], sort:s.sort || 0, hidden:!!s.hidden, created_at:isoT(s.createdAt), updated_at:isoT(s.updatedAt) })
   },
   dividends: {
     order: ["date", false],
@@ -297,7 +297,7 @@ const S = {
   outbox:[], lastSync:0, lastPull:0, sync:"idle", syncErr:"",
   urls:new Map(), installEvt:null,
   stocks:[], divs:[], quotes:{}, fx:null, quotesAt:0, qLoading:false, qErr:"",
-  stockTab:"hold", divYear:new Date().getFullYear(), hist:{}, market:{}, broker:undefined,
+  stockTab:"hold", divYear:new Date().getFullYear(), hist:{}, market:{}, broker:undefined, showHidden:false,
   holdSort:"value", holdShow:"value", hideAmt:false
 };
 try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; }catch(e){}
@@ -791,7 +791,7 @@ function position(s){
 }
 function portfolio(){
   let value = 0, cost = 0, day = 0, missing = 0, fxMissing = false;
-  const rows = S.stocks.filter(s => +s.qty > 0).map(s => {
+  const rows = S.stocks.filter(s => +s.qty > 0 && !s.hidden).map(s => {
     const p = position(s);
     if(p.price == null) missing++;
     if(s.currency === "USD" && !fxRate()) fxMissing = true;
@@ -1011,7 +1011,7 @@ function holdRowHtml(s, p){
 function holdHtml(){
   const P = portfolio();
   const label = `<div class="st-label">내 주식 평가금액 <span class="st-tools">${eyeBtn()}${refreshBtn()}</span></div>`;
-  if(!P.rows.length){
+  if(!P.rows.length && !S.stocks.some(s => s.hidden && +s.qty > 0)){
     return `<section class="st-hero">${label}<div class="st-big">${my(0, "KRW")}</div></section>
       <div class="empty"><h3>보유 종목을 추가해 보세요</h3><p>종목을 검색해서 수량과 평균 단가를 넣으면 평가금액과 수익률을 자동으로 계산해요.</p><button class="btn primary" type="button" data-act="stAdd">+ 종목 추가</button></div>`;
   }
@@ -1041,9 +1041,12 @@ function holdHtml(){
   const body = groups.length > 1
     ? groups.map(([m, l, gr]) => `<div class="st-group"><span>${l} ${gr.length}</span><span>${my(gr.reduce((a, r) => a + (r.p.valueKRW || 0), 0), "KRW")}</span></div>${gr.map(r => holdRowHtml(r.s, r.p)).join("")}`).join("")
     : rows.map(r => holdRowHtml(r.s, r.p)).join("");
+  const hid = S.stocks.filter(s => s.hidden && +s.qty > 0);
+  const hidHtml = hid.length ? `<button type="button" class="st-hidden-tg" data-act="showHidden" aria-expanded="${S.showHidden}">숨긴 종목 ${hid.length}개 · ${S.showHidden ? "접기" : "보기"}<small>합계와 비중에서 빠져 있어요</small></button>
+    ${S.showHidden ? `<div class="st-list st-dim">${hid.map(s => holdRowHtml(s, position(s))).join("")}</div>` : ""}` : "";
   const list = `<section class="st-sec">
     <div class="st-sec-h"><h3>보유 종목<span>${P.rows.length}</span></h3><button class="btn small" type="button" data-act="stAdd">+ 종목 추가</button></div>
-    ${ctrl}<div class="st-list">${body}</div></section>`;
+    ${ctrl}<div class="st-list">${body}</div>${hidHtml}</section>`;
   const alloc = P.rows.length > 1 && P.value > 0 ? `<section class="st-sec">
     <div class="st-sec-h"><h3>종목 비중</h3></div>
     <div class="st-alloc">${P.rows.map(({ s, p }) => { const pct = (p.valueKRW || 0) / P.value * 100;
@@ -1059,7 +1062,7 @@ function targetInfo(s){
   return gap <= 0 ? `목표가 ${fmtMoney(s.target, s.currency)} 도달` : `목표가 ${fmtMoney(s.target, s.currency)}${wonOf(s.target, s.currency) ? ` (${wonOf(s.target, s.currency)})` : ""} · ${gap.toFixed(1)}% 남음`;
 }
 function watchHtml(){
-  const list = S.stocks.filter(s => s.watch).sort((a, b) => (a.sort - b.sort) || (a.createdAt - b.createdAt));
+  const list = S.stocks.filter(s => s.watch && !s.hidden).sort((a, b) => (a.sort - b.sort) || (a.createdAt - b.createdAt));
   const head = `<div class="st-sec-h"><h3>관심 종목${list.length ? `<span>${list.length}</span>` : ""}</h3><span class="st-tools">${refreshBtn()}<button class="btn small" type="button" data-act="stAdd">+ 종목 추가</button></span></div>`;
   if(!list.length){
     return `<section class="st-sec st-sec-first">${head}</section><div class="empty"><h3>관심 종목을 모아 보세요</h3><p>지켜보는 종목을 추가하면 현재가와 오늘 등락, 목표가까지 남은 거리를 한눈에 볼 수 있어요.</p><button class="btn primary" type="button" data-act="stAdd">+ 종목 추가</button></div>`;
@@ -1194,7 +1197,7 @@ function renderStockDetail(){
     <div class="sb-head"><span class="ttl">${esc(codeOf(s.symbol))} · ${exchLabel(s)}</span>
       <div class="sp"><button class="btn small" type="button" data-act="stEdit">편집</button><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
     <div class="sb-body">
-      <div class="st-dhead">${avaHtml(s, "lg")}<div style="min-width:0"><h2 class="st-dname">${esc(s.name)}</h2><div class="st-dsym">${esc(s.symbol)}${s.watch ? " · 관심" : ""}</div></div></div>
+      <div class="st-dhead">${avaHtml(s, "lg")}<div style="min-width:0"><h2 class="st-dname">${esc(s.name)}</h2><div class="st-dsym">${esc(s.symbol)}${s.watch ? " · 관심" : ""}${s.hidden ? " · 숨김" : ""}</div></div></div>
       <div id="stp-price">${parts.price}</div>
       <div class="st-chartbox">
         <div class="st-chart" id="stChart">${chartHtml(S.hist[key], s)}</div>
@@ -1413,7 +1416,7 @@ function openStockForm(base, id){
   OV = { kind:"stform", id:s ? s.id : null, err:"", d:{
     symbol:src.symbol, market:src.market, currency:src.currency || (src.market === "US" ? "USD" : "KRW"), name:src.name,
     watch: s ? s.watch : true, qty: s && s.qty ? String(s.qty) : "", avgPrice: s && s.avgPrice ? String(s.avgPrice) : "",
-    target: s && num(s.target) ? String(s.target) : "", memo: s ? s.memo : "", toss: !!(s && s.broker === "toss") } };
+    target: s && num(s.target) ? String(s.target) : "", memo: s ? s.memo : "", toss: !!(s && s.broker === "toss"), hidden: !!(s && s.hidden) } };
   renderStockForm();
   if(!quoteOf(OV.d)) refreshQuotes(true, [OV.d.symbol]);
 }
@@ -1427,6 +1430,7 @@ function syncStForm(){
   const d = OV.d, v = id => ($(id) || {}).value || "";
   d.name = v("#stf-name"); d.qty = v("#stf-qty"); d.avgPrice = v("#stf-avg"); d.target = v("#stf-target"); d.memo = v("#stf-memo");
   d.watch = !!($("#stf-watch") || {}).checked;
+  if($("#stf-hidden")) d.hidden = $("#stf-hidden").checked;
 }
 function renderStockForm(){
   const d = OV.d, unit = d.currency === "USD" ? "달러" : "원";
@@ -1437,6 +1441,7 @@ function renderStockForm(){
       ${!OV.id ? `<button type="button" class="btn small ghost" data-act="stAdd" style="align-self:flex-start;margin-top:-8px">다른 종목 고르기</button>` : ""}
       <div class="fld"><label for="stf-name">이름</label><input id="stf-name" type="text" value="${esc(d.name)}" maxlength="60"></div>
       <label class="st-toggle" for="stf-watch"><span><b>관심 종목에 표시</b><small>관심 탭에서 현재가와 등락을 볼 수 있어요.</small></span><input id="stf-watch" type="checkbox" ${d.watch ? "checked" : ""}></label>
+      ${OV.id ? `<label class="st-toggle" for="stf-hidden"><span><b>목록에서 숨기기</b><small>내 주식·관심 목록과 합계에서 빠져요.${d.toss ? " 토스 동기화가 돌아도 숨긴 채로 남아요." : ""}</small></span><input id="stf-hidden" type="checkbox" ${d.hidden ? "checked" : ""}></label>` : ""}
       <div class="frow">
         <div class="fld"><label for="stf-qty">보유 수량 (주)</label><input id="stf-qty" type="text" inputmode="decimal" value="${esc(d.qty)}" placeholder="없으면 비워 두세요" ${d.toss ? "readonly" : ""}></div>
         <div class="fld"><label for="stf-avg">평균 단가 (${unit})</label><input id="stf-avg" type="text" inputmode="decimal" value="${esc(d.avgPrice)}" placeholder="${d.currency === "USD" ? "예: 182.50" : "예: 61000"}" ${d.toss ? "readonly" : ""}></div>
@@ -1462,13 +1467,13 @@ function saveStockForm(){
   if(avg == null || avg < 0) return fail("평균 단가는 숫자로 적어 주세요.");
   if(qty > 0 && !avg) return fail("보유 수량이 있으면 평균 단가도 적어 주세요.");
   if(d.target.trim() && (target == null || target <= 0)) return fail("목표가는 숫자로 적어 주세요.");
-  if(!d.watch && !qty) return fail("관심 종목에 표시하거나 보유 수량을 적어 주세요.");
+  if(!d.watch && !qty && !d.toss) return fail("관심 종목에 표시하거나 보유 수량을 적어 주세요.");
   const old = OV.id ? S.stocks.find(x => x.id === OV.id) : null;
   const now = Date.now();
   const rec = { id:old ? old.id : uuid(), symbol:d.symbol, market:d.market, name:d.name.trim(), currency:d.currency, watch:d.watch,
     qty, avgPrice:qty ? avg : (avg || 0), target, memo:d.memo.trim(), notes:old ? old.notes || [] : [],
     sort:old ? old.sort : Math.max(0, ...S.stocks.map(s => s.sort || 0)) + 1, createdAt:old ? old.createdAt : now, updatedAt:now,
-    broker:old ? old.broker || "" : "", brokerSyncedAt:old ? old.brokerSyncedAt || 0 : 0 };
+    broker:old ? old.broker || "" : "", brokerSyncedAt:old ? old.brokerSyncedAt || 0 : 0, hidden:!!(old && d.hidden) };
   if(old && old.broker === "toss"){ rec.qty = old.qty; rec.avgPrice = old.avgPrice; }
   putStock(rec);
   if(!old) S.stockTab = qty > 0 ? "hold" : "watch";
@@ -2146,6 +2151,7 @@ document.addEventListener("click", ev => {
     case "delYes": deleteEntry(OV.id); break;
     case "cats": openCats(); break;
     case "brokerCode": makeBrokerCode(); break;
+    case "showHidden": S.showHidden = !S.showHidden; render(); break;
     case "brokerOff": OV.brokerConfirm = true; renderSettings(); break;
     case "brokerOffNo": OV.brokerConfirm = false; renderSettings(); break;
     case "brokerOffYes": unlinkBroker(); break;

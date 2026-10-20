@@ -5,6 +5,8 @@
 
 alter table public.stocks add column if not exists broker text;
 alter table public.stocks add column if not exists broker_synced_at timestamptz;
+-- 목록에서 숨긴 종목 (동기화가 돌아도 숨긴 채로 둬요)
+alter table public.stocks add column if not exists hidden boolean not null default false;
 
 create table if not exists public.broker_links (
   user_id        uuid primary key default auth.uid() references auth.users(id) on delete cascade,

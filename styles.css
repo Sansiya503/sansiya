@@ -353,6 +353,9 @@ img[data-path]:not([src]){visibility:hidden}
 .st-broker{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0 0;font-size:12.5px;color:var(--ink-3)}
 .st-broker .st-toss{margin:0}
 .st-broker.bad{color:var(--danger)}
+.st-hidden-tg{display:flex;align-items:baseline;gap:8px;width:100%;margin-top:6px;padding:12px 4px;border:0;border-top:1px dashed var(--line-2);background:none;font:inherit;font-size:13.5px;color:var(--ink-2);text-align:left;cursor:pointer}
+.st-hidden-tg small{color:var(--ink-3);font-size:12px}
+.st-dim .st-row{opacity:.6}
 .st-tossnote{grid-column:1/-1;display:flex;align-items:center;gap:6px;margin:-4px 0 0;font-size:12.5px;color:var(--ink-3)}
 .st-tossnote .st-toss{margin:0}
 .linkish{border:0;background:none;padding:0;font:inherit;color:inherit;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
