@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.11.1";
+const APP_VERSION = "1.11.2";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -2343,7 +2343,7 @@ function btLoadSnap(){
 const bInt = v => num(v) ? Math.round(v).toLocaleString("en-US") : "-";
 const bFix = (v, d) => num(v) ? v.toLocaleString("en-US", { minimumFractionDigits:d, maximumFractionDigits:d }) : "-";
 const bSign = v => num(v) && v > 0 ? "+" : num(v) && v < 0 ? "-" : "";
-const bTone = v => !num(v) || Math.abs(v) < 1e-9 ? "flat" : v > 0 ? "up" : "down";
+const bTone = v => !num(v) || Math.abs(v) < 0.005 ? "flat" : v > 0 ? "up" : "down"; // shown to 2 decimals, so ±0.00 reads as flat
 const bFee = v => num(v) ? (v < 10 ? v.toFixed(1) : Math.round(v).toLocaleString("en-US")) : "-";
 const bYmd = t => { const d = new Date(t); return `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())}`; };
 function bAgo(sec){
