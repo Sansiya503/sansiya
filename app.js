@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.11.0";
+const APP_VERSION = "1.11.1";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -2290,14 +2290,14 @@ async function forgotPassword(){
 // Live prices come straight from the exchanges' public websockets (KRW: Upbit or Bithumb, USD: Binance)
 // with REST polling as a fallback. Dominance: CoinGecko, Fear & Greed: Alternative.me, charts: Binance
 // klines + blockchain.com charts, blocks/fees: mempool.space through our "quotes" function, else Blockstream.
-const BT_TABS = [["overview","Overview"],["blocks","Blocks"],["convert","Convert"],["premium","Premium"]];
-const BT_METRICS = [["price","Market Price"],["difficulty","Difficulty"],["hashrate","Hashrate"]];
-const BT_RANGES = [["1d","1D"],["7d","7D"],["1m","1M"],["1y","1Y"],["5y","5Y"],["10y","10Y"],["all","All"]];
+const BT_TABS = [["overview","개요"],["blocks","블록"],["convert","계산기"],["premium","프리미엄"]];
+const BT_METRICS = [["price","시세"],["difficulty","채굴 난이도"],["hashrate","해시레이트"]];
+const BT_RANGES = [["1d","1일"],["7d","7일"],["1m","1개월"],["1y","1년"],["5y","5년"],["10y","10년"],["all","전체"]];
 const BT_LONG = ["1m","1y","5y","10y","all"]; // difficulty & hashrate only come as daily values
-const BT_SAYINGS = ["Stay humble and stack sats.","HODL.","Don't Trust, Verify","Not your keys, not your Bitcoin.","You need Bitcoin.","Tick tock, next block.","1 BTC = 1 BTC"];
+const BT_SAYINGS = ["겸손하게, 꾸준히 모으자.","팔지 말고 버티자.","믿지 말고, 검증하라.","내 키가 아니면 내 비트코인이 아니다.","비트코인이 필요해.","째깍째깍, 다음 블록.","1비트코인은 1비트코인."];
 const BT_EX = {
-  upbit:{ name:"업비트", tag:"UPBIT", ws:"wss://api.upbit.com/websocket/v1", rest:"https://api.upbit.com/v1/ticker?markets=KRW-BTC,KRW-USDT" },
-  bithumb:{ name:"빗썸", tag:"BITHUMB", ws:"wss://ws-api.bithumb.com/websocket/v1", rest:"https://api.bithumb.com/v1/ticker?markets=KRW-BTC,KRW-USDT" }
+  upbit:{ name:"업비트", tag:"업비트", ws:"wss://api.upbit.com/websocket/v1", rest:"https://api.upbit.com/v1/ticker?markets=KRW-BTC,KRW-USDT" },
+  bithumb:{ name:"빗썸", tag:"빗썸", ws:"wss://ws-api.bithumb.com/websocket/v1", rest:"https://api.bithumb.com/v1/ticker?markets=KRW-BTC,KRW-USDT" }
 };
 const BN_WS = ["wss://stream.binance.com:9443/ws/btcusdt@ticker", "wss://data-stream.binance.vision/ws/btcusdt@ticker"];
 const BN_REST = ["https://api.binance.com", "https://data-api.binance.vision"];
@@ -2306,7 +2306,7 @@ const BT_BCI = { "7d":"7days", "1m":"30days", "1y":"1year", "5y":"5years", "10y"
 const BT_TTL = { fx:10 * 60e3, dom:5 * 60e3, fng:30 * 60e3, candles:60e3, height:60e3, mp:30e3, rest:10e3 };
 const HALVING_EVERY = 210000;
 const FNG_KO = { "extreme fear":"극단적 공포", "fear":"공포", "neutral":"중립", "greed":"탐욕", "extreme greed":"극단적 탐욕" };
-const BT_UNITS = [["BTC","BTC"],["SATS","Sats"],["KRW","KRW"],["USD","USD"]];
+const BT_UNITS = [["BTC","비트코인"],["SATS","사토시"],["KRW","원"],["USD","달러"]];
 
 const BT = {
   on:false, paused:false, tab:"overview", ex:"upbit", fxBasis:"bank", metric:"price", range:"5y",
@@ -2355,7 +2355,7 @@ function btUnit(v, units){ for(const [u, d] of units){ if(Math.abs(v) >= d) { co
 function btFmtMetric(v, metric){
   if(!num(v)) return "-";
   if(metric === "hashrate") return btUnit(v, [[" EH/s",1e6],[" PH/s",1e3],[" TH/s",1],[" GH/s",1e-3],[" MH/s",1e-6],[" KH/s",1e-9]]);
-  if(metric === "difficulty") return btUnit(v, [["T",1e12],["G",1e9],["M",1e6],["K",1e3],["",1e-9]]);
+  if(metric === "difficulty") return btUnit(v, [["조",1e12],["억",1e8],["만",1e4],["",1e-9]]);
   return "$" + bInt(v);
 }
 const btRate = () => BT.fxBasis === "usdt" && num(BT.usdtKrw) ? BT.usdtKrw : BT.fx;
@@ -2440,7 +2440,7 @@ async function btBlockstream(){
   return {
     blocks:blocks.map(b => ({ height:b.height, ts:b.timestamp, size:b.size, tx:b.tx_count, pool:"" })),
     fees:{ eco:pick("144","504","1008"), low:pick("6","12","10"), mid:pick("3","4","2"), high:pick("1","2") },
-    pending:pool ? { vsize:pool.vsize, count:pool.count, next:null } : null, src:"Blockstream", at:Date.now()
+    pending:pool ? { vsize:pool.vsize, count:pool.count, next:null } : null, src:"블록스트림", at:Date.now()
   };
 }
 const btLoadMp = () => btLoad("mp", async () => {
@@ -2577,12 +2577,12 @@ function btLiveParts(){
   const dK = num(BT.krw) && num(bnKrw) ? BT.krw - bnKrw : null, dU = num(krUsd) && num(BT.usd) ? krUsd - BT.usd : null;
   return {
     btKrw:btKrwTxt(), btUsd:btUsdTxt(),
-    btDom:btPct(BT.dom, 1), btFx:num(r) ? bFix(r, 1) : "-", btFxL:usdt ? "KRW/USDT" : "KRW/USD", btPrem:btPct(pr), btFng:num(BT.fng) ? String(BT.fng) : "-",
+    btDom:btPct(BT.dom, 1), btFx:num(r) ? bFix(r, 1) : "-", btFxL:usdt ? "테더 환율" : "원/달러 환율", btPrem:btPct(pr), btFng:num(BT.fng) ? String(BT.fng) : "-",
     bcK:btKrwTxt(), bcU:"$" + bInt(BT.usd),
     bpBig:num(pr) ? `${bSign(pr)}${Math.abs(pr).toFixed(2)}%` : "-", bpBadge:num(pr) && pr < 0 ? "역프리미엄" : "프리미엄",
     bpKK:bInt(BT.krw), bpKU:bInt(krUsd), bpBK:bInt(bnKrw), bpBU:bInt(BT.usd),
     bpDK:num(dK) ? bSign(dK) + bInt(Math.abs(dK)) : "-", bpDU:num(dU) ? bSign(dU) + bInt(Math.abs(dU)) : "-",
-    bpFx:num(r) ? bFix(r, 1) : "-", bpFxL:usdt ? `USDT 시세(${BT_EX[BT.ex].name})` : "실시간 환율(USD/KRW)",
+    bpFx:num(r) ? bFix(r, 1) : "-", bpFxL:usdt ? `테더 시세(${BT_EX[BT.ex].name})` : "실시간 환율(원/달러)",
     bpFxT:usdt ? "실시간" : BT.fxAt ? `${bYmd(BT.fxAt)} 업데이트` : "",
     _pr:pr, _dK:dK
   };
@@ -2630,13 +2630,13 @@ function btPaintAll(){
 function bitcoinHtml(){
   return `<div class="bt-wrap">
     <div class="bt-head">
-      <h2 class="bt-title">${BT_COIN}<span>BITCOIN</span></h2>
+      <h2 class="bt-title">${BT_COIN}<span>비트코인</span></h2>
       <span class="bt-live" id="btLive" data-live="${btLiveState()}" role="img" aria-label="${btLiveLabel()}" title="${btLiveLabel()}"></span>
       <button type="button" class="bt-gear" data-act="btSet" aria-label="비트코인 설정">${BT_GEAR}</button>
     </div>
     <div id="btBody">${btBodyHtml()}</div>
     <p class="bt-say" id="btSay">${esc(BT.saying)}</p>
-    <p class="bt-src">시세 ${BT_EX[BT.ex].name}·바이낸스 실시간 · 도미넌스 CoinGecko · 공포·탐욕 Alternative.me · 차트 Binance·blockchain.com · 블록 mempool.space·Blockstream. 투자 판단의 근거가 아니라 기록용이에요.</p>
+    <p class="bt-src">시세 ${BT_EX[BT.ex].name}·바이낸스 실시간 · 도미넌스 코인게코 · 공포·탐욕 지수 alternative.me · 차트 바이낸스·blockchain.com · 블록 mempool.space·블록스트림. 투자 판단의 근거가 아니라 기록용이에요.</p>
     <nav class="bt-nav" aria-label="비트코인 메뉴">${BT_TABS.map(([v, l]) => `<button type="button" data-bttab="${v}" aria-current="${BT.tab === v}"><span class="ic">${BT_ICONS[v]}</span><span>${l}</span></button>`).join("")}</nav>
   </div>`;
 }
@@ -2665,10 +2665,10 @@ function btOverviewHtml(){
       ${btCandlesSvg()}
     </section>
     <div class="bt-tiles">
-      <button type="button" class="bt-tile" data-bttile="dom"><span>BTC.D</span><b id="btDom">${v.btDom}</b></button>
+      <button type="button" class="bt-tile" data-bttile="dom"><span>도미넌스</span><b id="btDom">${v.btDom}</b></button>
       <button type="button" class="bt-tile" data-bttile="fx"><span id="btFxL">${v.btFxL}</span><b id="btFx">${v.btFx}</b></button>
-      <button type="button" class="bt-tile" data-bttile="prem"><span>Premium</span><b id="btPrem">${v.btPrem}</b></button>
-      <button type="button" class="bt-tile" data-bttile="fng"><span>F&amp;G Index</span><b id="btFng">${v.btFng}</b></button>
+      <button type="button" class="bt-tile" data-bttile="prem"><span>프리미엄</span><b id="btPrem">${v.btPrem}</b></button>
+      <button type="button" class="bt-tile" data-bttile="fng"><span>공포·탐욕</span><b id="btFng">${v.btFng}</b></button>
     </div>
     <section class="bt-sec">
       <div class="bt-chhead" id="btChHead">${btChHeadHtml()}</div>
@@ -2753,12 +2753,12 @@ function bindBtChart(){
 function btHalvingHtml(){
   const hv = btHalving();
   const segs = Array.from({ length:24 }, (_, i) => `<i class="${hv && i < Math.floor(hv.p * 24) ? "on" : ""}"></i>`).join("");
-  return `<h3 class="bt-h3">${BT_HALF}<span>Bitcoin Halving</span></h3>
+  return `<h3 class="bt-h3">${BT_HALF}<span>비트코인 반감기</span></h3>
     <div class="bt-hbar" role="img" aria-label="${hv ? `반감기 진행 ${(hv.p * 100).toFixed(2)}%` : "반감기 정보를 불러오는 중"}"><div class="bt-segs">${segs}</div><b>${hv ? (hv.p * 100).toFixed(2) + "%" : "-"}</b></div>
     <div class="bt-hstats">${btCubes()}
-      <div><span>Current</span><b>${hv ? bInt(hv.h) : "-"}</b></div>
-      <div><span>Remaining</span><b>${hv ? bInt(hv.remain) : "-"}</b></div>
-      <div><span>Estimated Date</span><b>${hv ? bYmd(hv.est) : "-"}</b></div>
+      <div><span>현재 블록</span><b>${hv ? bInt(hv.h) : "-"}</b></div>
+      <div><span>남은 블록</span><b>${hv ? bInt(hv.remain) : "-"}</b></div>
+      <div><span>예상일</span><b>${hv ? bYmd(hv.est) : "-"}</b></div>
     </div>`;
 }
 
@@ -2836,10 +2836,10 @@ function bcRows(){
   const u = BT.conv.unit, keys = u === "BTC" ? ["krw","usd","sats"] : u === "SATS" ? ["krw","usd","btc"] : u === "KRW" ? ["btc","usd","sats"] : ["krw","btc","sats"];
   const c = bcCalc(), fx = BT.fx;
   const def = {
-    krw:["KRW(₩):", bInt(c.krw), num(fx) ? `* ₩${bInt(fx)} = 1$` : ""],
-    usd:["USD($):", num(c.usd) ? bFix(c.usd, 2) : "-", num(fx) ? `* 1USD = ₩${bInt(fx)}` : ""],
-    sats:["Sats:", bInt(c.sats), "* 1BTC = 100,000,000 Sats"],
-    btc:["BTC(₿):", bcFmtBtc(c.btc), num(BT.krw) ? `* 1BTC = ₩${bInt(BT.krw)}` : ""]
+    krw:["원화(₩):", bInt(c.krw), num(BT.krw) ? `* ${BT_EX[BT.ex].name} 1비트코인 = ${bInt(BT.krw)}원` : ""],
+    usd:["달러($):", num(c.usd) ? bFix(c.usd, 2) : "-", num(fx) ? `* 1달러 = ${bInt(fx)}원` : ""],
+    sats:["사토시:", bInt(c.sats), "* 1비트코인 = 100,000,000사토시"],
+    btc:["비트코인(₿):", bcFmtBtc(c.btc), num(BT.usd) ? `* 1비트코인 = $${bInt(BT.usd)}` : ""]
   };
   return keys.map(kk => ({ key:kk, label:def[kk][0], val:def[kk][1], foot:def[kk][2], raw:c[kk] }));
 }
@@ -2866,7 +2866,7 @@ function btConvertHtml(){
         <div class="bt-mw end" id="bcUnitWrap">${bcUnitHtml()}</div>
       </div>
       <div class="bc-prem">
-        <span class="t">Premium<small title="원화 금액에 프리미엄(%)을 더하거나 빼서 계산해요."><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8"/><path d="M10 9v5M10 6.2v.1"/></svg>P(%):</small></span>
+        <span class="t">프리미엄<small title="원화 금액에 프리미엄(%)을 더하거나 빼서 계산해요."><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8"/><path d="M10 9v5M10 6.2v.1"/></svg>조정(%)</small></span>
         <input id="bcPrem" type="text" inputmode="decimal" autocomplete="off" value="${esc(BT.conv.prem)}" aria-label="프리미엄 퍼센트">
         <button type="button" class="bc-step" data-bcprem="-0.1" aria-label="프리미엄 0.1% 내리기">−</button><button type="button" class="bc-step" data-bcprem="0.1" aria-label="프리미엄 0.1% 올리기">+</button>
       </div>
@@ -2890,18 +2890,18 @@ function btPremiumHtml(){
   const v = btLiveParts(), pt = bTone(v._pr), ex = BT_EX[BT.ex];
   const pos = num(v._pr) ? Math.max(0, Math.min(100, (v._pr + 10) / 5 * 25)) : 50;
   return `<section class="bp" aria-label="김치 프리미엄">
-    <p class="bp-eye">KIMCHI PREMIUM</p>
+    <p class="bp-eye">김치 프리미엄</p>
     <h3 class="bp-ttl">비트코인 한국 프리미엄</h3>
     <p class="bp-desc">국내외 거래소의 실시간 비트코인 가격과 한국 프리미엄을 확인하세요.</p>
     <div class="bp-hero"><span class="bp-badge" id="bpBadge" data-tone="${pt}">${v.bpBadge}</span><b class="bp-big" id="bpBig" data-tone="${pt}">${v.bpBig}</b></div>
     <div class="bp-gauge" aria-hidden="true"><i id="bpMark" style="left:${pos}%"></i></div>
     <div class="bp-scale" aria-hidden="true"><span>-10%</span><span>0</span><span>+10%</span></div>
     <div class="bp-table">
-      <div class="bp-r head"><span>구분</span><span>KRW</span><span>USD</span></div>
+      <div class="bp-r head"><span>구분</span><span>원화</span><span>달러</span></div>
       <div class="bp-r"><span><b>한국 가격</b><small>${ex.tag}</small></span><span id="bpKK">${v.bpKK}</span><span id="bpKU">${v.bpKU}</span></div>
-      <div class="bp-r"><span><b>해외 가격</b><small>BINANCE</small></span><span id="bpBK">${v.bpBK}</span><span id="bpBU">${v.bpBU}</span></div>
-      <div class="bp-r spread"><span><b>프리미엄 차이</b><small>SPREAD</small></span><span id="bpDK" data-tone="${bTone(v._dK)}">${v.bpDK}</span><span id="bpDU" data-tone="${bTone(v._dK)}">${v.bpDU}</span></div>
-      <div class="bp-fx"><span><b id="bpFxL">${v.bpFxL}</b><small id="bpFxT">${v.bpFxT}</small></span><span><b id="bpFx">${v.bpFx}</b> KRW</span></div>
+      <div class="bp-r"><span><b>해외 가격</b><small>바이낸스</small></span><span id="bpBK">${v.bpBK}</span><span id="bpBU">${v.bpBU}</span></div>
+      <div class="bp-r spread"><span><b>프리미엄 차이</b><small>국내 − 해외</small></span><span id="bpDK" data-tone="${bTone(v._dK)}">${v.bpDK}</span><span id="bpDU" data-tone="${bTone(v._dK)}">${v.bpDU}</span></div>
+      <div class="bp-fx"><span><b id="bpFxL">${v.bpFxL}</b><small id="bpFxT">${v.bpFxT}</small></span><span><b id="bpFx">${v.bpFx}</b> 원</span></div>
     </div>
     <p class="bp-note">프리미엄 = 국내 가격 ÷ (바이낸스 가격 × ${BT.fxBasis === "usdt" ? "테더 원화 시세" : "환율"}) − 1 · 기준은 오른쪽 위 톱니바퀴에서 바꿀 수 있어요.</p>
   </section>`;
@@ -2915,14 +2915,14 @@ function renderBtSet(){
     <div class="sb-body"><div class="set">
       <section><h3>국내 거래소</h3><div class="sv">
         <div class="seg" role="group" aria-label="국내 거래소">${Object.entries(BT_EX).map(([v, e]) => `<button type="button" data-btex="${v}" aria-pressed="${BT.ex === v}">${e.name}</button>`).join("")}</div>
-        <p class="note">원화 시세와 김치 프리미엄 계산에 써요. 해외 가격은 바이낸스(BTC/USDT)예요.</p>
+        <p class="note">원화 시세와 김치 프리미엄 계산에 써요. 해외 가격은 바이낸스 시세예요.</p>
       </div></section>
       <section><h3>프리미엄 환율</h3><div class="sv">
-        <div class="seg" role="group" aria-label="프리미엄 환율 기준"><button type="button" data-btfx="bank" aria-pressed="${BT.fxBasis === "bank"}">은행 환율</button><button type="button" data-btfx="usdt" aria-pressed="${BT.fxBasis === "usdt"}">USDT 시세</button></div>
-        <p class="note">은행 환율은 USD/KRW(Yahoo Finance), USDT 시세는 ${BT_EX[BT.ex].name}의 테더 원화 가격이에요. USDT 기준으로 보면 프리미엄이 보통 더 작게 나와요.</p>
+        <div class="seg" role="group" aria-label="프리미엄 환율 기준"><button type="button" data-btfx="bank" aria-pressed="${BT.fxBasis === "bank"}">은행 환율</button><button type="button" data-btfx="usdt" aria-pressed="${BT.fxBasis === "usdt"}">테더 시세</button></div>
+        <p class="note">은행 환율은 야후 파이낸스의 원/달러 환율, 테더 시세는 ${BT_EX[BT.ex].name}의 테더(USDT) 원화 가격이에요. 테더 기준으로 보면 프리미엄이 보통 더 작게 나와요.</p>
       </div></section>
       <section><h3>데이터</h3><div class="sv">
-        <p class="note">시세는 ${BT_EX[BT.ex].name}·바이낸스 공개 실시간 연결, 도미넌스 CoinGecko, 공포·탐욕 지수 Alternative.me, 차트 Binance·blockchain.com, 블록·수수료 mempool.space(안 되면 Blockstream)에서 받아요. 키나 로그인이 필요 없는 공개 정보만 써요.</p>
+        <p class="note">시세는 ${BT_EX[BT.ex].name}·바이낸스 공개 실시간 연결, 도미넌스 코인게코, 공포·탐욕 지수 alternative.me, 차트 바이낸스·blockchain.com, 블록·수수료 mempool.space(안 되면 블록스트림)에서 받아요. 키나 로그인이 필요 없는 공개 정보만 써요.</p>
       </div></section>
     </div></div></div>`);
 }
@@ -2934,8 +2934,8 @@ function btSetEx(ex){
 }
 function btTile(kind){
   if(kind === "prem"){ btSetTab("premium"); return; }
-  if(kind === "dom") toast(num(BT.dom) ? `BTC 도미넌스 ${BT.dom.toFixed(1)}% · 전체 암호화폐 시가총액 중 비트코인 비중` : "도미넌스를 불러오는 중이에요.");
-  if(kind === "fx") toast(BT.fxBasis === "usdt" ? `${BT_EX[BT.ex].name} 테더(USDT) 원화 시세` : `은행 기준 USD/KRW${BT.fxAt ? ` · ${bYmd(BT.fxAt)}` : ""}`);
+  if(kind === "dom") toast(num(BT.dom) ? `비트코인 도미넌스 ${BT.dom.toFixed(1)}% · 전체 암호화폐 시가총액 중 비트코인 비중` : "도미넌스를 불러오는 중이에요.");
+  if(kind === "fx") toast(BT.fxBasis === "usdt" ? `${BT_EX[BT.ex].name} 테더(USDT) 원화 시세` : `은행 기준 원/달러 환율${BT.fxAt ? ` · ${bYmd(BT.fxAt)}` : ""}`);
   if(kind === "fng") toast(num(BT.fng) ? `공포·탐욕 지수 ${BT.fng} · ${BT.fngLabel} (0 극단적 공포 ~ 100 극단적 탐욕)` : "공포·탐욕 지수를 불러오는 중이에요.");
 }
 function btPaste(){

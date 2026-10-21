@@ -729,3 +729,14 @@ a.bk-cube:hover{filter:brightness(1.06)}
 .bp-fx>span:last-child b{font:800 clamp(20px,6vw,26px) var(--f-btc);color:var(--ink);margin-right:2px}
 .bp-note{margin:14px 0 0;font-size:12px;color:var(--ink-3);line-height:1.6}
 @media (min-width:640px){ .bk-strip{margin:0 0 18px;padding-left:20px} .bp-table{margin:0} }
+/* bitcoin: Korean labels use the app's Korean face, numbers stay monospace */
+.bt-tile span,.bt-hstats span{font-family:var(--f-body);font-weight:500;letter-spacing:0}
+.bt-metric,.bt-h3{font-family:var(--f-body);font-weight:600;letter-spacing:-.01em}
+.bt-range,.bt-pop button,.bc-unit{font-family:var(--f-body)}
+.bt-nav button{font:600 12.5px var(--f-body)}
+.bc-row .lb{font-family:var(--f-body);font-weight:600}
+.bt-say{font-family:var(--f-body);font-weight:600}
+.bp-eye{letter-spacing:.12em}
+.bp-r small,.bp-fx small{font-family:var(--f-body);letter-spacing:0}
+.bp-r.head>span{font-family:var(--f-body)!important;letter-spacing:0}
+.bc-row .ft{font-family:var(--f-body);font-weight:600}
