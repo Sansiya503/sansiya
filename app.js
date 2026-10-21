@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.11.2";
+const APP_VERSION = "1.11.3";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -465,9 +465,16 @@ const pendingIds = () => new Set(S.outbox.filter(o => o.op === "upsert").map(o =
 // the calendar view (calendarHtml) is kept in the code but hidden from the menu for now;
 // put ["calendar","캘린더"] back here to bring it back
 const VIEWS = [["archive","아카이브"],["stats","통계 · 회고"],["stocks","주식"],["bitcoin","비트코인"]];
+// round badge icons for the top menu, in the same style as the bitcoin coin (colour disc + white mark)
+const VIEW_ICONS = {
+  archive:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#3D7BFA"/><g fill="#fff"><rect x="15" y="16.5" width="34" height="9.5" rx="3"/><path d="M18 28.5h28v14.5a4.5 4.5 0 0 1-4.5 4.5h-19A4.5 4.5 0 0 1 18 43z"/></g><rect x="26" y="32.5" width="12" height="4" rx="2" fill="#3D7BFA"/></svg>`,
+  stats:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#8A63F2"/><g fill="#fff"><rect x="16" y="33" width="8.5" height="14" rx="2.5"/><rect x="27.75" y="24" width="8.5" height="23" rx="2.5"/><rect x="39.5" y="16" width="8.5" height="31" rx="2.5"/></g></svg>`,
+  stocks:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#F04452"/><g fill="none" stroke="#fff" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 43.5 26.5 32l7.5 7.5L47.5 26"/><path d="M38 24.5h10.5V35"/></g></svg>`
+};
+const viewIcon = v => VIEW_ICONS[v] || (v === "bitcoin" ? BT_COIN : "");
 function renderChrome(){
   $("#brandCount").textContent = S.loaded ? `Personal register · ${S.entries.length}건` : "Personal register";
-  $("#tabbar").innerHTML = VIEWS.map(([v, l]) => `<button type="button" data-view="${v}" aria-current="${S.view === v}">${l}</button>`).join("");
+  $("#tabbar").innerHTML = VIEWS.map(([v, l]) => `<button type="button" data-view="${v}" aria-current="${S.view === v}"><span class="tb-ic">${viewIcon(v)}</span><span class="tb-l">${l}</span></button>`).join("");
   updateSyncUI();
 }
 
