@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.12.3";
+const APP_VERSION = "1.12.4";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -495,7 +495,6 @@ const VIEW_ICONS = {
 };
 const viewIcon = v => VIEW_ICONS[v] || (v === "bitcoin" ? BT_COIN : "");
 function renderChrome(){
-  $("#brandCount").textContent = S.loaded ? `Personal register · ${S.entries.length}건` : "Personal register";
   $("#tabbar").innerHTML = VIEWS.map(([v, l]) => `<button type="button" data-view="${v}" aria-current="${S.view === v}"><span class="tb-ic">${viewIcon(v)}</span><span class="tb-l">${l}</span></button>`).join("");
   updateSyncUI();
 }

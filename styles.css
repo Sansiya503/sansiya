@@ -54,8 +54,7 @@ button{cursor:pointer}
 .brand{display:flex;align-items:center;gap:10px;margin-right:auto;min-width:0}
 .brand svg{width:30px;height:30px;flex:none;border-radius:7px}
 .brand .bt{display:flex;flex-direction:column;line-height:1.15;min-width:0}
-.brand h1{font-family:var(--f-display);font-weight:600;font-size:22px;margin:0;letter-spacing:-.01em}
-.brand small{font-family:var(--f-mono);font-size:11px;color:var(--ink-3);letter-spacing:.08em;text-transform:uppercase;margin-top:3px;white-space:nowrap}
+.brand h1{font-family:var(--f-display);font-weight:600;font-size:22px;margin:0;letter-spacing:-.01em;line-height:1.2}
 .search{position:relative;flex:1 1 260px;max-width:400px}
 .search input{width:100%;height:38px;border:1px solid var(--line-2);background:var(--surface);border-radius:var(--r);padding:0 40px 0 36px}
 .search input::placeholder{color:var(--ink-3)}
@@ -325,7 +324,6 @@ img[data-path]:not([src]){visibility:hidden}
   .vhead h2{font-size:24px}
 }
 @media (max-width:560px){
-  .brand small{display:none}
   .chart svg{min-width:0}
   .btn.primary.new{padding:0 12px}
   .sync span{display:none}
