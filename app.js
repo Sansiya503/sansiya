@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.12.2";
+const APP_VERSION = "1.12.3";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -313,7 +313,7 @@ const S = {
   stocks:[], divs:[], quotes:{}, fx:null, quotesAt:0, qLoading:false, qErr:"",
   stockTab:"hold", divYear:new Date().getFullYear(), hist:{}, market:{}, broker:undefined, showHidden:false,
   holdSort:"value", holdShow:"value", hideAmt:false,
-  photos:[], bookmarks:[], albumMissing:false, phBusy:0, phQ:"", phFav:false, phTopic:"all", phLimit:120, bmTab:"links", bmTag:null, bmLoading:new Set()
+  photos:[], bookmarks:[], albumMissing:false, phBusy:0, phQ:"", phFav:false, phTopic:"all", phLimit:100, bmTab:"links", bmTag:null, bmLoading:new Set()
 };
 try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; if(p.bmTab === "favs") S.bmTab = "favs"; if(p.phTopic) S.phTopic = p.phTopic; }catch(e){}
 function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort, holdSort:S.holdSort, holdShow:S.holdShow, hideAmt:S.hideAmt, bmTab:S.bmTab, phTopic:S.phTopic })); }catch(e){} }
@@ -2431,7 +2431,8 @@ function phMatches(p, q){
 const PH_TOPICS = [["all","All"],["travel","여행"],["food","음식"],["design","디자인"],["arch","건축"],["landscape","조경"],["interior","인테리어"]];
 const PH_TOPIC_KEYS = PH_TOPICS.slice(1).map(t => t[0]);
 const phTopicName = k => (PH_TOPICS.find(t => t[0] === k) || [k, k])[1];
-const PH_PAGE = 120; // tiles added per scroll step (20 rows of 6)
+const PH_PAGE = 100; // tiles added per scroll step
+// All = every photo (whatever topics it has, and ones not sorted yet); a topic = only photos saved to it
 function phList(){
   const q = S.phQ.trim().toLowerCase(), tp = PH_TOPIC_KEYS.includes(S.phTopic) ? S.phTopic : null;
   return photosSorted().filter(p => (!tp || (p.topics || []).includes(tp)) && (!S.phFav || isFav("photo", p.id)) && (!q || phMatches(p, q)));
