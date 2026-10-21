@@ -760,15 +760,11 @@ a.bk-cube:hover{filter:brightness(1.06)}
 .ph-busy{display:flex;align-items:center;gap:8px;color:var(--ink-2);font-size:13.5px;margin:-6px 0 14px}
 .ph-busy i{width:14px;height:14px;border:2px solid var(--line-2);border-top-color:var(--accent-strong);border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.ph-day{margin-bottom:24px}
-.ph-day h3{display:flex;align-items:baseline;gap:8px;margin:0 0 8px;font:500 13.5px var(--f-mono);color:var(--ink-2)}
-.ph-day h3 span{color:var(--ink-3);font-size:12px}
 .ph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px}
 .ph-tile{position:relative;aspect-ratio:1;border:0;padding:0;background:var(--sunk);border-radius:6px;overflow:hidden;cursor:zoom-in;display:block;width:100%}
 .ph-tile img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .25s}
 .ph-tile:hover img{transform:scale(1.04)}
 .ph-star{position:absolute;top:4px;right:6px;color:#FFD43B;font-style:normal;font-size:15px;line-height:1;text-shadow:0 1px 3px rgba(0,0,0,.55)}
-.ph-cap{position:absolute;left:6px;bottom:6px;width:7px;height:7px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px rgba(0,0,0,.28)}
 body.ph-drop .ph{outline:3px dashed var(--accent-strong);outline-offset:8px;border-radius:12px}
 @media (max-width:560px){ .ph-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:3px} .ph-tile{border-radius:3px} }
 
@@ -842,3 +838,34 @@ body.ph-drop .ph{outline:3px dashed var(--accent-strong);outline-offset:8px;bord
 .fav-btn[aria-pressed="true"]{color:#C98A00}
 .btn.fav-btn{gap:5px}
 @media (max-width:560px){ .fav-l{display:none} }
+
+/* album: Instagram-style explore grid (square tiles, no counts) */
+body[data-view="photos"] .top .search{display:none}
+.ph{max-width:935px;margin:0 auto}
+.ph-bar{display:flex;align-items:center;gap:6px;margin-bottom:14px}
+.ph-search{flex:1;min-width:0;display:flex;align-items:center;gap:10px;height:46px;padding:0 16px;border-radius:12px;background:var(--sunk);cursor:text}
+.ph-search svg{width:22px;height:22px;fill:none;stroke:var(--ink);stroke-width:2.1;stroke-linecap:round;flex:none}
+.ph-search input{flex:1;min-width:0;border:0;background:transparent;height:100%;font-size:17px;outline:none;padding:0}
+.ph-search input::placeholder{color:var(--ink-3)}
+.ph-search:focus-within{box-shadow:0 0 0 2px var(--accent)}
+.ph-ic{flex:none;width:46px;height:46px;border:0;background:transparent;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;color:var(--ink);cursor:pointer;padding:0}
+.ph-ic svg{width:28px;height:28px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linejoin:round;stroke-linecap:round}
+.ph-ic:hover{background:var(--sunk)}
+.ph-mark[aria-pressed="true"] svg{fill:currentColor}
+.ph-insta{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}
+.ph-insta .ph-tile{border-radius:0;cursor:pointer}
+.ph-insta .ph-tile img{transition:none}
+.ph-insta .ph-tile:hover img{transform:none}
+.ph-insta .ph-tile::after{content:"";position:absolute;inset:0;background:transparent;transition:background .15s;pointer-events:none}
+.ph-hover{position:absolute;left:10px;right:10px;bottom:9px;z-index:1;color:#fff;font-size:13px;line-height:1.4;text-shadow:0 1px 3px rgba(0,0,0,.6);opacity:0;transition:opacity .15s;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-align:left;pointer-events:none}
+@media (hover:hover){ .ph-insta .ph-tile:hover::after{background:rgba(0,0,0,.3)} .ph-insta .ph-tile:hover .ph-hover{opacity:1} }
+.ph-insta .ph-star{top:8px;right:8px;width:20px;height:20px;z-index:1;text-shadow:none;line-height:0}
+.ph-star svg{width:100%;height:100%;fill:#fff;stroke:none;filter:drop-shadow(0 1px 2px rgba(0,0,0,.55))}
+.ph-wait{background:linear-gradient(90deg,var(--sunk),var(--line-2),var(--sunk));background-size:200% 100%;animation:sh 1.2s infinite linear}
+.ph-count{text-align:center;color:var(--ink-3);font-size:12.5px;margin:18px 0 0}
+@media (max-width:600px){
+  .ph-bar{gap:0;margin-bottom:12px}
+  .ph-search{height:44px;padding:0 14px}
+  .ph-ic{width:44px;height:44px}
+  .ph-insta{gap:2px;margin-left:calc(-1 * max(16px, env(safe-area-inset-left,0px)));margin-right:calc(-1 * max(16px, env(safe-area-inset-right,0px)))}
+}

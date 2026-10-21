@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.12.0";
+const APP_VERSION = "1.12.1";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -313,7 +313,7 @@ const S = {
   stocks:[], divs:[], quotes:{}, fx:null, quotesAt:0, qLoading:false, qErr:"",
   stockTab:"hold", divYear:new Date().getFullYear(), hist:{}, market:{}, broker:undefined, showHidden:false,
   holdSort:"value", holdShow:"value", hideAmt:false,
-  photos:[], bookmarks:[], albumMissing:false, phBusy:0, bmTab:"links", bmTag:null, bmLoading:new Set()
+  photos:[], bookmarks:[], albumMissing:false, phBusy:0, phQ:"", phFav:false, bmTab:"links", bmTag:null, bmLoading:new Set()
 };
 try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; if(p.bmTab === "favs") S.bmTab = "favs"; }catch(e){}
 function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort, holdSort:S.holdSort, holdShow:S.holdShow, hideAmt:S.hideAmt, bmTab:S.bmTab })); }catch(e){} }
@@ -513,10 +513,15 @@ function render(){
     if(m.querySelector(".bt-wrap") && a && a.tagName === "INPUT" && m.contains(a)) btPaintLive();
     else { m.innerHTML = bitcoinHtml(); bindBtChart(); }
   }
-  else if(S.view === "photos") m.innerHTML = photosHtml();
+  else if(S.view === "photos"){
+    const a = document.activeElement;
+    if(m.querySelector(".ph") && a && a.id === "phQ") setH("phBody", phBodyHtml());
+    else m.innerHTML = photosHtml();
+  }
   else if(S.view === "bookmarks"){ m.innerHTML = bookmarksHtml(); if(S.bmTab === "favs" && favItems().stocks.length) refreshQuotes(); }
   else m.innerHTML = statsHtml();
   if(S.view === "bitcoin") btStart(); else btStop();
+  document.body.dataset.view = S.view;
   hydrateImages();
 }
 function refresh(){
@@ -2411,21 +2416,51 @@ async function uploadAlbum(files){
   for(let i = 0; i < list.length; i += 3) await Promise.all(list.slice(i, i + 3).map(one));
   toast(ok ? `사진 ${ok}장을 올렸어요.${fail ? " " + fail : ""}` : (fail || "사진을 올리지 못했어요."));
 }
+const PH_ICON = {
+  search:`<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="7"/><path d="m20.5 20.5-5-5"/></svg>`,
+  add:`<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="5"/><path d="M12 7.5v9M7.5 12h9"/></svg>`,
+  mark:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h12a1 1 0 0 1 1 1V21l-7-5.6L5 21V4.5a1 1 0 0 1 1-1z"/></svg>`
+};
+// what the search box matches: caption + the date written several ways (2024, 2024.05, 2024년 5월, 5월 17일)
+function phMatches(p, q){
+  const [y, m, d] = String(p.date || "").split("-");
+  const hay = [p.caption || "", fmtDate(p.date), `${y}`, `${y}.${m}`, `${y}-${m}`, `${y}년 ${+m}월`, `${+m}월 ${+d}일`, `${+m}월`].join(" ").toLowerCase();
+  return q.split(/\s+/).filter(Boolean).every(w => hay.includes(w));
+}
+function phList(){
+  const q = S.phQ.trim().toLowerCase();
+  return photosSorted().filter(p => (!S.phFav || isFav("photo", p.id)) && (!q || phMatches(p, q)));
+}
 function photosHtml(){
-  const list = photosSorted(), groups = [];
-  list.forEach(p => { const g = groups[groups.length - 1]; if(g && g.date === p.date) g.items.push(p); else groups.push({ date:p.date, items:[p] }); });
-  const tile = p => `<button type="button" class="ph-tile" data-photo="${esc(p.id)}" aria-label="${esc(fmtDate(p.date))} 사진${p.caption ? ": " + esc(p.caption) : ""}">${imgTag(p.thumb || p.path)}${isFav("photo", p.id) ? `<i class="ph-star" aria-hidden="true">★</i>` : ""}${p.caption ? `<i class="ph-cap" aria-hidden="true"></i>` : ""}</button>`;
   return `<div class="ph">
-    <div class="vhead"><h2>사진</h2><span class="sub">${list.length}장</span>
-      <div class="tools"><label class="btn primary ph-add"><input type="file" id="phFile" accept="image/*" multiple hidden>+ 사진 올리기</label></div></div>
-    ${S.phBusy ? `<p class="ph-busy" role="status"><i></i>사진 ${S.phBusy}장 올리는 중…</p>` : ""}
-    ${list.length ? groups.map(g => `<section class="ph-day"><h3>${esc(fmtDate(g.date))}<span>${g.items.length}장</span></h3><div class="ph-grid">${g.items.map(tile).join("")}</div></section>`).join("")
-      : S.phBusy ? "" : `<div class="empty ph-empty"><h3>아직 사진이 없어요</h3><p>위의 ‘사진 올리기’를 누르거나${matchMedia("(hover:hover)").matches ? " 이 화면에 사진을 끌어다 놓으면" : ""} 찍은 날짜별로 모아 보여 드려요.</p></div>`}
+    <div class="ph-bar">
+      <label class="ph-search">${PH_ICON.search}<input id="phQ" type="search" placeholder="검색" value="${esc(S.phQ)}" autocomplete="off" enterkeyhint="search" aria-label="사진 설명이나 날짜로 검색"></label>
+      <label class="ph-ic ph-add" title="사진 올리기"><input type="file" id="phFile" accept="image/*" multiple hidden aria-label="사진 올리기">${PH_ICON.add}</label>
+      <button type="button" class="ph-ic ph-mark" data-act="phFav" aria-pressed="${S.phFav}" aria-label="즐겨찾기한 사진만 보기" title="즐겨찾기한 사진만">${PH_ICON.mark}</button>
+    </div>
+    <div id="phBody">${phBodyHtml()}</div>
   </div>`;
 }
-function openPhoto(id){ if(!photoById(id)) return; if(OV) endOvKeepHistory(); OV = { kind:"photo", id, edit:false, confirm:false }; renderPhoto(); }
+function phBodyHtml(){
+  const list = phList(), q = S.phQ.trim();
+  const tile = p => `<button type="button" class="ph-tile" data-photo="${esc(p.id)}" aria-label="${esc(fmtDate(p.date))} 사진${p.caption ? ": " + esc(p.caption) : ""}">${imgTag(p.thumb || p.path)}${isFav("photo", p.id) ? `<i class="ph-star" aria-hidden="true">${PH_ICON.mark}</i>` : ""}${p.caption ? `<span class="ph-hover" aria-hidden="true">${esc(p.caption)}</span>` : ""}</button>`;
+  const waiting = Array.from({ length:S.phBusy }, () => `<div class="ph-tile ph-wait" aria-hidden="true"></div>`).join("");
+  const status = S.phBusy ? `<p class="ph-busy" role="status"><i></i>사진 ${S.phBusy}장 올리는 중…</p>` : "";
+  if(!list.length && !S.phBusy){
+    if(!S.photos.length) return `<div class="empty ph-empty"><h3>아직 사진이 없어요</h3><p>위쪽 ＋를 눌러 사진을 올려 보세요.${matchMedia("(hover:hover)").matches ? " 이 화면에 끌어다 놓아도 돼요." : ""} 새로 올린 사진이 맨 앞에 와요.</p></div>`;
+    return `<div class="empty ph-empty"><h3>${q ? `‘${esc(q)}’에 맞는 사진이 없어요` : "즐겨찾기한 사진이 없어요"}</h3><p>${q ? "설명에 쓴 낱말이나 2024.05, 5월 17일처럼 날짜로 찾아보세요." : "사진을 크게 연 뒤 ☆를 누르면 여기에 모여요."}</p></div>`;
+  }
+  const note = q || S.phFav ? `${q ? `‘${esc(q)}’ ` : ""}${S.phFav ? "즐겨찾기 " : ""}사진 ${list.length}장` : `사진 ${S.photos.length}장`;
+  return `${status}<div class="ph-grid ph-insta">${waiting}${list.map(tile).join("")}</div><p class="ph-count">${note}</p>`;
+}
+function openPhoto(id){
+  if(!photoById(id)) return;
+  const ids = (S.view === "photos" ? phList() : S.view === "bookmarks" ? favItems().photos : photosSorted()).map(p => p.id);
+  if(OV) endOvKeepHistory(); OV = { kind:"photo", id, ids:ids.includes(id) ? ids : [id], edit:false, confirm:false }; renderPhoto();
+}
+const pvList = () => (OV && OV.ids ? OV.ids.map(photoById).filter(Boolean) : photosSorted());
 function renderPhoto(){
-  const list = photosSorted(), i = list.findIndex(p => p.id === OV.id), p = list[i];
+  const list = pvList(), i = list.findIndex(p => p.id === OV.id), p = list[i];
   if(!p){ closeOv(); return; }
   const fav = isFav("photo", p.id);
   const foot = OV.confirm
@@ -2454,7 +2489,7 @@ function renderPhoto(){
   bindPhotoSwipe();
 }
 function phNav(d){
-  const list = photosSorted(), i = list.findIndex(p => p.id === OV.id), j = i + d;
+  const list = pvList(), i = list.findIndex(p => p.id === OV.id), j = i + d;
   if(i < 0 || j < 0 || j >= list.length) return;
   OV.id = list[j].id; OV.edit = false; OV.confirm = false; renderPhoto();
 }
@@ -2477,9 +2512,10 @@ function savePhotoEdit(){
   enqueue({ op:"row", table:"photos", rec });
 }
 function deletePhoto(){
-  const list = photosSorted(), i = list.findIndex(x => x.id === OV.id), p = list[i]; if(!p) return;
+  const list = pvList(), i = list.findIndex(x => x.id === OV.id), p = list[i]; if(!p) return;
   const next = list[i + 1] || list[i - 1];
   S.photos = S.photos.filter(x => x.id !== p.id); savePhotos();
+  if(OV.ids) OV.ids = OV.ids.filter(x => x !== p.id);
   dropFavs("photo", p.id);
   enqueue({ op:"rowdel", table:"photos", id:p.id, files:[...new Set([p.path, p.thumb].filter(Boolean))] });
   if(next){ OV.id = next.id; OV.confirm = false; OV.edit = false; renderPhoto(); } else closeOv();
@@ -3369,6 +3405,7 @@ document.addEventListener("click", ev => {
   if(ds.themeSet){ applyTheme(ds.themeSet); renderSettings(); return; }
   switch(ds.act){
     case "new": openEditor(null); break;
+    case "phFav": S.phFav = !S.phFav; render(); break;
     case "phEdit": OV.edit = true; OV.confirm = false; renderPhoto(); { const c = $("#ph-cap"); if(c) c.focus(); } break;
     case "phEditNo": OV.edit = false; renderPhoto(); break;
     case "phDel": OV.confirm = true; OV.edit = false; renderPhoto(); break;
@@ -3495,6 +3532,7 @@ $("#q").addEventListener("input", ev => { clearTimeout(qT); qT = setTimeout(() =
 document.addEventListener("input", ev => {
   const t = ev.target;
   if(t.id === "st-q" && OV && OV.kind === "stsearch") onStockSearchInput(t.value);
+  if(t.id === "phQ"){ S.phQ = t.value; setH("phBody", phBodyHtml()); hydrateImages(); }
   if(t.id === "bcAmt"){ BT.conv.amt = t.value; btPaintConvert(); }
   if(t.id === "bcPrem"){ BT.conv.prem = t.value; btPaintConvert(); }
   if(t.id === "dv-amt" && OV && OV.kind === "divform"){ OV.d.amount = t.value; const h = $("#dvKrwHint"); if(h) h.textContent = dvKrwHint(); }
