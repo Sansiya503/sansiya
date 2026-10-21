@@ -2,6 +2,7 @@
 // - 주가·환율: Yahoo Finance 차트 데이터 (비공식, 한국 주식은 약 20분 지연)
 // - 한국 종목 이름 검색: aikstockdata.com (전 영업일 확정 종가, 비상업적 이용·출처 표시)
 // - 비트코인 블록·수수료: mempool.space 공개 API (25초 캐시)
+// - 북마크 링크 제목: 저장한 웹 주소의 <title>/og:title (1시간 캐시, 내부망·IP 주소는 막아요)
 // 로그인한 산시야 사용자만 호출할 수 있어요.
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
@@ -232,6 +233,67 @@ async function mempool() {
   return data;
 }
 
+// ---------- page title for saved links (bookmarks), cached for 1 h ----------
+const metaCache = new Map<string, { at: number; data: unknown }>();
+function blockedHost(h: string) {
+  h = h.toLowerCase().replace(/\.$/, "");
+  if (!h.includes(".") || h === "localhost" || /\.(localhost|local|internal|lan|home|corp)$/.test(h)) return true;
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(":") || h.startsWith("["); // no raw IP addresses
+}
+function decodeEntities(s: string) {
+  const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", middot: "·", hellip: "…", ndash: "–", mdash: "—", laquo: "«", raquo: "»" };
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+    if (e[0] === "#") { const n = e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : m; }
+    return named[e.toLowerCase()] ?? m;
+  });
+}
+function metaTags(html: string) {
+  const out: Record<string, string>[] = [];
+  const re = /<meta\b[^>]*>/gi; let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) && out.length < 300) {
+    const attrs: Record<string, string> = {}; const ar = /([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g; let a: RegExpExecArray | null;
+    while ((a = ar.exec(m[0]))) attrs[a[1].toLowerCase()] = a[2] ?? a[3] ?? a[4] ?? "";
+    out.push(attrs);
+  }
+  return out;
+}
+async function linkmeta(raw: string) {
+  let u: URL;
+  try { u = new URL(raw); } catch { throw new Error("bad url"); }
+  if (!/^https?:$/.test(u.protocol) || blockedHost(u.hostname)) throw new Error("bad url");
+  const hit = metaCache.get(u.href);
+  if (hit && Date.now() - hit.at < 3_600_000) return hit.data;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 7000);
+  let html = "", finalUrl = u.href;
+  try {
+    const r = await fetch(u.href, { headers: { "User-Agent": UA, "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5", "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.7" }, redirect: "follow", signal: ctl.signal });
+    finalUrl = r.url || u.href;
+    if (blockedHost(new URL(finalUrl).hostname)) throw new Error("bad url");
+    const ct = r.headers.get("content-type") || "";
+    if (!r.body || !/html|xml/i.test(ct)) { try { await r.body?.cancel(); } catch { /* ignore */ } return { title: "", description: "", url: finalUrl }; }
+    const reader = r.body.getReader(); const chunks: Uint8Array[] = []; let n = 0;
+    while (n < 400_000) {
+      const { done, value } = await reader.read(); if (done || !value) break;
+      chunks.push(value); n += value.length;
+      if (/<\/head>/i.test(new TextDecoder().decode(value))) break;
+    }
+    try { await reader.cancel(); } catch { /* ignore */ }
+    const buf = new Uint8Array(n); let o = 0; for (const c of chunks) { buf.set(c, o); o += c.length; }
+    let cs = (/charset=["']?([\w-]+)/i.exec(ct) || [])[1] || "";
+    if (!cs) cs = (/<meta[^>]+charset=["']?([\w-]+)/i.exec(new TextDecoder("windows-1252").decode(buf.slice(0, 8192))) || [])[1] || "utf-8";
+    try { html = new TextDecoder(cs.toLowerCase()).decode(buf); } catch { html = new TextDecoder().decode(buf); }
+  } finally { clearTimeout(timer); }
+  const tags = metaTags(html);
+  const meta = (...keys: string[]) => { for (const k of keys) { const t = tags.find((x) => (x.property || x.name || "").toLowerCase() === k); if (t && t.content && t.content.trim()) return decodeEntities(t.content).replace(/\s+/g, " ").trim(); } return ""; };
+  const tm = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
+  const title = meta("og:title", "twitter:title") || (tm ? decodeEntities(tm[1]).replace(/\s+/g, " ").trim() : "");
+  const data = { title: title.slice(0, 200), description: meta("og:description", "description", "twitter:description").slice(0, 300), site: meta("og:site_name").slice(0, 80), url: finalUrl };
+  metaCache.set(u.href, { at: Date.now(), data });
+  if (metaCache.size > 500) metaCache.delete(metaCache.keys().next().value as string);
+  return data;
+}
+
 async function requireUser(req: Request) {
   const auth = req.headers.get("authorization") || "";
   const apikey = req.headers.get("apikey") || "";
@@ -274,6 +336,7 @@ Deno.serve(async (req) => {
       return json(await history(s, String(body.range || "3mo")));
     }
     if (action === "mempool") return json(await mempool());
+    if (action === "linkmeta") return json(await linkmeta(String(body.url || "").slice(0, 2000)));
     return json({ error: "unknown action" }, 400);
   } catch (e) {
     return json({ error: String((e as Error)?.message || e) }, 500);

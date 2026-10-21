@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.11.3";
+const APP_VERSION = "1.12.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -122,6 +122,20 @@ const TABLES = {
     to: (d, uid) => ({ id:d.id, user_id:uid, stock_id:d.stockId || null, symbol:d.symbol || "", name:d.name || "", date:d.date,
       amount:+d.amount || 0, currency:d.currency || "KRW", krw_amount:numOrNull(d.krw), memo:d.memo || "",
       created_at:isoT(d.createdAt), updated_at:isoT(d.updatedAt) })
+  },
+  photos: {
+    order: ["date", false],
+    from: r => ({ id:r.id, path:r.path, thumb:r.thumb || "", date:r.date, caption:r.caption || "", w:+r.width || 0, h:+r.height || 0,
+      createdAt:Date.parse(r.created_at) || 0, updatedAt:Date.parse(r.updated_at) || 0 }),
+    to: (p, uid) => ({ id:p.id, user_id:uid, path:p.path, thumb:p.thumb || "", date:p.date, caption:p.caption || "", width:p.w || null, height:p.h || null,
+      created_at:isoT(p.createdAt), updated_at:isoT(p.updatedAt) })
+  },
+  bookmarks: {
+    order: ["created_at", false],
+    from: r => ({ id:r.id, kind:r.kind || "link", ref:r.ref || "", url:r.url || "", title:r.title || "", memo:r.memo || "", tags:Array.isArray(r.tags) ? r.tags : [],
+      createdAt:Date.parse(r.created_at) || 0, updatedAt:Date.parse(r.updated_at) || 0 }),
+    to: (b, uid) => ({ id:b.id, user_id:uid, kind:b.kind || "link", ref:b.ref || "", url:b.url || "", title:b.title || "", memo:b.memo || "", tags:b.tags || [],
+      created_at:isoT(b.createdAt), updated_at:isoT(b.updatedAt) })
   }
 };
 
@@ -298,10 +312,11 @@ const S = {
   urls:new Map(), installEvt:null,
   stocks:[], divs:[], quotes:{}, fx:null, quotesAt:0, qLoading:false, qErr:"",
   stockTab:"hold", divYear:new Date().getFullYear(), hist:{}, market:{}, broker:undefined, showHidden:false,
-  holdSort:"value", holdShow:"value", hideAmt:false
+  holdSort:"value", holdShow:"value", hideAmt:false,
+  photos:[], bookmarks:[], albumMissing:false, phBusy:0, bmTab:"links", bmTag:null, bmLoading:new Set()
 };
-try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; }catch(e){}
-function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort, holdSort:S.holdSort, holdShow:S.holdShow, hideAmt:S.hideAmt })); }catch(e){} }
+try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; if(p.bmTab === "favs") S.bmTab = "favs"; }catch(e){}
+function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort, holdSort:S.holdSort, holdShow:S.holdShow, hideAmt:S.hideAmt, bmTab:S.bmTab })); }catch(e){} }
 const k = name => `u:${S.uid}:${name}`;
 const saveCache = () => KV.set(k("entries"), S.entries);
 const saveOutbox = () => KV.set(k("outbox"), S.outbox);
@@ -347,6 +362,7 @@ function flush(){
           await S.B.upsertRow(op.table, op.rec);
         }else if(op.op === "rowdel"){
           await S.B.deleteRow(op.table, op.id);
+          if(op.files && op.files.length) await S.B.removePhotos(op.files).catch(() => {});
         }
         S.outbox = S.outbox.filter(o => o !== op); await saveOutbox(); S.syncErr = "";
       }catch(err){
@@ -379,9 +395,13 @@ async function pull(){
   if(!ok){ if(!S.loaded){ S.loaded = true; refresh(); } return; }
   setSync("busy");
   try{
-    const [rows, st, stocks, divs] = await Promise.all([S.B.fetchEntries(), S.B.fetchSettings(), S.B.fetchRows("stocks"), S.B.fetchRows("dividends")]);
+    const opt = t => S.B.fetchRows(t).catch(e => missingTable(e) ? null : Promise.reject(e));
+    const [rows, st, stocks, divs, photos, bms] = await Promise.all([S.B.fetchEntries(), S.B.fetchSettings(), S.B.fetchRows("stocks"), S.B.fetchRows("dividends"), opt("photos"), opt("bookmarks")]);
     if(S.outbox.length){ setSync("idle"); return; }
     S.entries = rows; S.stocks = stocks; S.divs = divs;
+    S.albumMissing = !photos || !bms;
+    if(photos){ S.photos = photos; savePhotos(); }
+    if(bms){ S.bookmarks = bms; saveBookmarks(); }
     if(st && Array.isArray(st.categories) && st.categories.length) S.cats = st.categories.map(c => ({ code:c.code, name:c.name }));
     S.loaded = true; S.lastSync = Date.now();
     await Promise.all([saveCache(), saveStocks(), saveDivs(), KV.set(k("settings"), { categories:S.cats }), KV.set(k("lastSync"), S.lastSync)]);
@@ -395,7 +415,7 @@ async function pull(){
 function markPending(){
   if(OV && OV.kind === "edit") return;
   if(OV && OV.kind === "settings"){ renderSettings(); return; }
-  if(S.view === "archive" || S.view === "calendar" || S.view === "stocks") render();
+  if(S.view === "archive" || S.view === "calendar" || S.view === "stocks" || S.view === "photos" || S.view === "bookmarks") render();
 }
 const saveStocks = () => KV.set(k("stocks"), S.stocks);
 const saveDivs = () => KV.set(k("divs"), S.divs);
@@ -431,7 +451,7 @@ function hydrateImages(){
 }
 document.addEventListener("error", ev => {
   const t = ev.target;
-  if(t && t.classList && t.classList.contains("st-logo")){ t.remove(); return; }
+  if(t && t.classList && (t.classList.contains("st-logo") || t.classList.contains("bm-fav"))){ t.remove(); return; }
   if(t && t.tagName === "IMG" && t.dataset && t.dataset.path && !t.dataset.retried && navigator.onLine){
     t.dataset.retried = "1"; S.urls.delete(t.dataset.path); t.removeAttribute("src"); hydrateImages();
   }
@@ -464,12 +484,14 @@ const pendingIds = () => new Set(S.outbox.filter(o => o.op === "upsert").map(o =
 /* ---------- render: chrome ---------- */
 // the calendar view (calendarHtml) is kept in the code but hidden from the menu for now;
 // put ["calendar","캘린더"] back here to bring it back
-const VIEWS = [["archive","아카이브"],["stats","통계 · 회고"],["stocks","주식"],["bitcoin","비트코인"]];
+const VIEWS = [["archive","아카이브"],["stats","통계 · 회고"],["stocks","주식"],["bitcoin","비트코인"],["photos","사진"],["bookmarks","북마크"]];
 // round badge icons for the top menu, in the same style as the bitcoin coin (colour disc + white mark)
 const VIEW_ICONS = {
   archive:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#3D7BFA"/><g fill="#fff"><rect x="15" y="16.5" width="34" height="9.5" rx="3"/><path d="M18 28.5h28v14.5a4.5 4.5 0 0 1-4.5 4.5h-19A4.5 4.5 0 0 1 18 43z"/></g><rect x="26" y="32.5" width="12" height="4" rx="2" fill="#3D7BFA"/></svg>`,
   stats:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#8A63F2"/><g fill="#fff"><rect x="16" y="33" width="8.5" height="14" rx="2.5"/><rect x="27.75" y="24" width="8.5" height="23" rx="2.5"/><rect x="39.5" y="16" width="8.5" height="31" rx="2.5"/></g></svg>`,
-  stocks:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#F04452"/><g fill="none" stroke="#fff" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 43.5 26.5 32l7.5 7.5L47.5 26"/><path d="M38 24.5h10.5V35"/></g></svg>`
+  stocks:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#F04452"/><g fill="none" stroke="#fff" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 43.5 26.5 32l7.5 7.5L47.5 26"/><path d="M38 24.5h10.5V35"/></g></svg>`,
+  photos:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#20B46B"/><rect x="15" y="18" width="34" height="28" rx="5" fill="#fff"/><path d="M19 42l8.5-10 6 7 4-4.5L45 42z" fill="#20B46B"/><circle cx="40.5" cy="26" r="3.6" fill="#20B46B"/></svg>`,
+  bookmarks:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#E5468E"/><path d="M22 15.5h20a3 3 0 0 1 3 3V49l-13-8.5L19 49V18.5a3 3 0 0 1 3-3z" fill="#fff"/></svg>`
 };
 const viewIcon = v => VIEW_ICONS[v] || (v === "bitcoin" ? BT_COIN : "");
 function renderChrome(){
@@ -491,6 +513,8 @@ function render(){
     if(m.querySelector(".bt-wrap") && a && a.tagName === "INPUT" && m.contains(a)) btPaintLive();
     else { m.innerHTML = bitcoinHtml(); bindBtChart(); }
   }
+  else if(S.view === "photos") m.innerHTML = photosHtml();
+  else if(S.view === "bookmarks"){ m.innerHTML = bookmarksHtml(); if(S.bmTab === "favs" && favItems().stocks.length) refreshQuotes(); }
   else m.innerHTML = statsHtml();
   if(S.view === "bitcoin") btStart(); else btStop();
   hydrateImages();
@@ -1407,7 +1431,7 @@ function renderStockDetail(){
   const key = s.symbol + "|" + OV.range;
   showOv(`<div class="sheetbox st-sheet" role="dialog" aria-modal="true" aria-label="${esc(s.name)}">
     <div class="sb-head"><span class="ttl">${esc(codeOf(s.symbol))} · ${exchLabel(s)}</span>
-      <div class="sp"><button class="btn small" type="button" data-act="stEdit">편집</button><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
+      <div class="sp">${favBtn("stock", s.id)}<button class="btn small" type="button" data-act="stEdit">편집</button><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
     <div class="sb-body">
       <div class="st-dhead">${avaHtml(s, "lg")}<div style="min-width:0"><h2 class="st-dname">${esc(s.name)}</h2><div class="st-dsym">${esc(s.symbol)}${s.watch ? " · 관심" : ""}${s.hidden ? " · 숨김" : ""}</div></div></div>
       <div id="stp-price">${parts.price}</div>
@@ -1567,7 +1591,7 @@ function removeNote(nid){
 }
 function deleteStock(){
   const s = S.stocks.find(x => x.id === OV.id); if(!s) return;
-  S.stocks = S.stocks.filter(x => x.id !== s.id); saveStocks();
+  S.stocks = S.stocks.filter(x => x.id !== s.id); saveStocks(); dropFavs("stock", s.id);
   let touched = false;
   S.divs = S.divs.map(d => d.stockId === s.id ? (touched = true, { ...d, stockId:null, symbol:d.symbol || s.symbol, name:d.name || s.name }) : d);
   if(touched) saveDivs();
@@ -1802,7 +1826,7 @@ function renderDetail(){
   const c = catOf(e.cat);
   showOv(`<div class="sheetbox" role="dialog" aria-modal="true" aria-label="${esc(e.title)}">
     <div class="sb-head"><span class="ttl">${sheetNo(e)} · ${esc(c.name)}</span>
-      <div class="sp"><button class="btn small" type="button" data-act="edit">편집</button><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
+      <div class="sp">${favBtn("entry", e.id)}<button class="btn small" type="button" data-act="edit">편집</button><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
     <div class="sb-body">
       <h2 class="dt-title">${esc(e.title)}</h2>
       <div class="dt-meta"><span class="mono">${fmtDate(e.date)}</span>
@@ -1961,7 +1985,7 @@ async function saveDraft(){
 }
 async function deleteEntry(id){
   const e = S.entries.find(x => x.id === id); if(!e) return;
-  S.entries = S.entries.filter(x => x.id !== id); saveCache();
+  S.entries = S.entries.filter(x => x.id !== id); saveCache(); dropFavs("entry", id);
   closeOv(); render(); toast("삭제했어요.");
   enqueue({ op:"delete", id, photos:(e.photos || []).slice() });
 }
@@ -2048,6 +2072,7 @@ async function signOut(){
 function resetState(){
   S.uid = null; S.email = ""; S.entries = []; S.loaded = false; S.outbox = []; S.lastSync = 0; S.urls = new Map(); S.syncErr = ""; S.sync = "idle"; S.cats = DEFAULT_CATS.slice();
   S.stocks = []; S.divs = []; S.quotes = {}; S.fx = null; S.quotesAt = 0; S.qErr = ""; S.qLoading = false; S.hist = {}; S.market = {}; S.broker = undefined;
+  S.photos = []; S.bookmarks = []; S.albumMissing = false; S.phBusy = 0; S.bmTag = null; S.bmLoading = new Set();
 }
 function onSignedOut(){
   if(!S.uid) return;
@@ -2071,7 +2096,7 @@ syncThemeColor();
 
 /* backup */
 function exportJson(){
-  const data = JSON.stringify({ app:"sansiya", version:APP_VERSION, exportedAt:new Date().toISOString(), categories:S.cats, entries:S.entries, stocks:S.stocks, dividends:S.divs }, null, 2);
+  const data = JSON.stringify({ app:"sansiya", version:APP_VERSION, exportedAt:new Date().toISOString(), categories:S.cats, entries:S.entries, stocks:S.stocks, dividends:S.divs, photos:S.photos, bookmarks:S.bookmarks }, null, 2);
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([data], { type:"application/json" }));
   a.download = `산시야-백업-${today()}.json`;
@@ -2089,7 +2114,7 @@ function normEntry(r){
 }
 function parseImport(text){
   const j = JSON.parse(text);
-  const src = Array.isArray(j) ? j : (Array.isArray(j.entries) ? j.entries : (Array.isArray(j.stocks) || Array.isArray(j.dividends) ? [] : null));
+  const src = Array.isArray(j) ? j : (Array.isArray(j.entries) ? j.entries : (Array.isArray(j.stocks) || Array.isArray(j.dividends) || Array.isArray(j.bookmarks) || Array.isArray(j.photos) ? [] : null));
   if(!src) throw new Error("format");
   const cats = Array.isArray(j.categories) ? j.categories.filter(c => c && c.code && c.name).map(c => ({ code:String(c.code).slice(0, 4).toUpperCase(), name:String(c.name).slice(0, 20) })) : [];
   const existing = new Set(S.entries.map(e => e.id));
@@ -2128,7 +2153,15 @@ function parseImport(text){
     divs.push({ id:isUuid(r.id) ? r.id : uuid(), stockId:sid, symbol:String(r.symbol || ""), name:String(r.name || ""), date:/^\d{4}-\d{2}-\d{2}$/.test(r.date || "") ? r.date : today(),
       amount:+r.amount, currency:r.currency === "USD" ? "USD" : "KRW", krw:numOrNull(r.krw), memo:String(r.memo || ""), createdAt:+r.createdAt || now, updatedAt:+r.updatedAt || now });
   }
-  return { entries:out, cats, dropped, overwrite:out.filter(e => existing.has(e.id)).length, stocks, divs };
+  const now2 = Date.now();
+  const photos = (Array.isArray(j.photos) ? j.photos : []).filter(r => r && typeof r.path === "string" && S.uid && r.path.startsWith(S.uid + "/") && !S.photos.some(p => p.path === r.path))
+    .map(r => ({ id:isUuid(r.id) ? r.id : uuid(), path:r.path, thumb:typeof r.thumb === "string" && r.thumb.startsWith(S.uid + "/") ? r.thumb : r.path, date:/^\d{4}-\d{2}-\d{2}$/.test(r.date || "") ? r.date : today(),
+      caption:String(r.caption || "").slice(0, 500), w:+r.w || 0, h:+r.h || 0, createdAt:+r.createdAt || now2, updatedAt:+r.updatedAt || now2 }));
+  const bookmarks = (Array.isArray(j.bookmarks) ? j.bookmarks : []).filter(r => r && ["link","entry","stock","photo"].includes(r.kind))
+    .filter(r => r.kind === "link" ? normUrl(r.url) && !S.bookmarks.some(b => b.kind === "link" && b.url === normUrl(r.url)) : r.ref && !S.bookmarks.some(b => b.kind === r.kind && b.ref === r.ref))
+    .map(r => ({ id:isUuid(r.id) ? r.id : uuid(), kind:r.kind, ref:String(r.ref || ""), url:r.kind === "link" ? normUrl(r.url) : "", title:String(r.title || "").slice(0, 200), memo:String(r.memo || "").slice(0, 1000),
+      tags:Array.isArray(r.tags) ? r.tags.map(String).slice(0, 20) : [], createdAt:+r.createdAt || now2, updatedAt:+r.updatedAt || now2 }));
+  return { entries:out, cats, dropped, overwrite:out.filter(e => existing.has(e.id)).length, stocks, divs, photos, bookmarks };
 }
 function openImport(res){ if(OV) endOvKeepHistory(); OV = { kind:"import", res }; renderImport(); }
 function renderImport(){
@@ -2136,7 +2169,7 @@ function renderImport(){
   showOv(`<div class="sheetbox" role="dialog" aria-modal="true" aria-label="가져오기">
     <div class="sb-head"><span class="ttl">백업 가져오기</span><div class="sp"><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
     <div class="sb-body prose">
-      <p style="margin:0;font-size:15px">${[r.entries.length ? `기록 <b>${r.entries.length}건</b>` : "", r.stocks.length ? `종목 <b>${r.stocks.length}개</b>` : "", r.divs.length ? `배당 <b>${r.divs.length}건</b>` : ""].filter(Boolean).join(", ")}을 가져올까요?</p>
+      <p style="margin:0;font-size:15px">${[r.entries.length ? `기록 <b>${r.entries.length}건</b>` : "", r.stocks.length ? `종목 <b>${r.stocks.length}개</b>` : "", r.divs.length ? `배당 <b>${r.divs.length}건</b>` : "", r.photos.length ? `사진 <b>${r.photos.length}장</b>` : "", r.bookmarks.length ? `북마크 <b>${r.bookmarks.length}개</b>` : ""].filter(Boolean).join(", ")}을 가져올까요?</p>
       <p class="tag" style="margin:0">${r.overwrite ? `같은 기록 ${r.overwrite}건은 백업 내용으로 덮어써요. ` : ""}${r.dropped ? `사진 ${r.dropped}장은 옮길 수 없어서 빠져요. ` : ""}${r.entries.some(e => e.example) ? "예시 기록도 들어 있어요. 가져온 뒤 배너에서 한 번에 지울 수 있어요." : ""}</p>
     </div>
     <div class="sb-foot"><button class="btn" type="button" data-act="close">취소</button><button class="btn primary" type="button" data-act="importYes">가져오기</button></div></div>`);
@@ -2159,7 +2192,9 @@ async function doImport(){
     for(const x of r.stocks) enqueue({ op:"row", table:"stocks", rec:x });
     for(const x of r.divs) enqueue({ op:"row", table:"dividends", rec:x });
   }
-  render(); toast([r.entries.length ? `기록 ${r.entries.length}건` : "", r.stocks.length ? `종목 ${r.stocks.length}개` : "", r.divs.length ? `배당 ${r.divs.length}건` : ""].filter(Boolean).join(", ") + "을 가져왔어요.");
+  if(r.photos.length){ S.photos = [...S.photos, ...r.photos]; savePhotos(); for(const x of r.photos) enqueue({ op:"row", table:"photos", rec:x }); }
+  if(r.bookmarks.length){ S.bookmarks = [...S.bookmarks, ...r.bookmarks]; saveBookmarks(); for(const x of r.bookmarks) enqueue({ op:"row", table:"bookmarks", rec:x }); }
+  render(); toast([r.entries.length ? `기록 ${r.entries.length}건` : "", r.stocks.length ? `종목 ${r.stocks.length}개` : "", r.divs.length ? `배당 ${r.divs.length}건` : "", r.photos.length ? `사진 ${r.photos.length}장` : "", r.bookmarks.length ? `북마크 ${r.bookmarks.length}개` : ""].filter(Boolean).join(", ") + "을 가져왔어요.");
   if(!r.entries.length) return;
   try{
     setSync("busy"); await S.B.upsertMany(r.entries); S.lastSync = Date.now(); setSync("ok");
@@ -2292,6 +2327,318 @@ async function forgotPassword(){
   }
   if($("#g-email")) $("#g-email").value = email;
 }
+
+/* ---------- photo album ---------- */
+const savePhotos = () => KV.set(k("photos"), S.photos);
+const saveBookmarks = () => KV.set(k("bookmarks"), S.bookmarks);
+const photoById = id => S.photos.find(p => p.id === id);
+const photosSorted = () => S.photos.slice().sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.createdAt || 0) - (a.createdAt || 0));
+const missingTable = e => /PGRST205|42P01|does not exist|schema cache|Could not find the table/i.test(`${e && e.code || ""} ${e && e.message || e || ""}`);
+
+// JPEG "date taken" (EXIF DateTimeOriginal), so photos land on the day they were shot
+async function exifDate(file){
+  if(!/jpe?g/i.test(file.type || "") && !/\.jpe?g$/i.test(file.name || "")) return null;
+  try{
+    const v = new DataView(await file.slice(0, 256 * 1024).arrayBuffer());
+    if(v.getUint16(0) !== 0xFFD8) return null;
+    let off = 2;
+    while(off + 4 < v.byteLength){
+      const marker = v.getUint16(off), len = v.getUint16(off + 2);
+      if(marker === 0xFFE1 && v.getUint32(off + 4) === 0x45786966){
+        const t = off + 10, le = v.getUint16(t) === 0x4949;
+        const u16 = o => v.getUint16(t + o, le), u32 = o => v.getUint32(t + o, le);
+        const str = (o, n) => { let s = ""; for(let i = 0; i < n; i++){ const c = v.getUint8(t + o + i); if(!c) break; s += String.fromCharCode(c); } return s; };
+        const find = (ifd, tag) => { const n = u16(ifd); for(let i = 0; i < n; i++){ const e = ifd + 2 + i * 12; if(u16(e) === tag) return e; } return -1; };
+        const ifd0 = u32(4); let s = "";
+        const ex = find(ifd0, 0x8769);
+        if(ex >= 0){ const d = find(u32(ex + 8), 0x9003); if(d >= 0) s = str(u32(d + 8), 19); }
+        if(!s){ const d = find(ifd0, 0x0132); if(d >= 0) s = str(u32(d + 8), 19); }
+        const m = /^(\d{4}):(\d\d):(\d\d)/.exec(s);
+        return m && +m[1] > 1990 && +m[2] >= 1 && +m[2] <= 12 ? `${m[1]}-${m[2]}-${m[3]}` : null;
+      }
+      if((marker & 0xFF00) !== 0xFF00) break;
+      off += 2 + len;
+    }
+  }catch(e){}
+  return null;
+}
+async function photoDate(f){ return (await exifDate(f)) || (f.lastModified ? ymd(new Date(f.lastModified)) : today()); }
+// size + a small square-ish preview for the grid
+async function photoThumb(file){
+  if(!/^image\/(jpeg|png|webp)$/.test(file.type)) return { w:0, h:0, thumb:null };
+  try{
+    const bmp = await createImageBitmap(file), w = bmp.width, h = bmp.height;
+    const sc = Math.min(1, 420 / Math.min(w, h));
+    if(sc === 1 && file.size < 120e3) return { w, h, thumb:null };
+    const cv = document.createElement("canvas"); cv.width = Math.round(w * sc); cv.height = Math.round(h * sc);
+    cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+    let b = await new Promise(r => cv.toBlob(r, "image/webp", .8));
+    if(!b || b.type !== "image/webp") b = await new Promise(r => cv.toBlob(r, "image/jpeg", .82));
+    return { w, h, thumb:b };
+  }catch(e){ return { w:0, h:0, thumb:null }; }
+}
+async function uploadAlbum(files){
+  if(!S.B) return;
+  if(S.B.kind !== "local" && !navigator.onLine){ toast("사진은 인터넷에 연결되어 있을 때 올릴 수 있어요."); return; }
+  if(S.albumMissing){ toast("사진 저장 공간을 준비하는 중이에요. 잠시 뒤 다시 올려 주세요."); return; }
+  const list = [...files].filter(f => /^image\//.test(f.type) || !f.type).slice(0, 40);
+  if(!list.length){ toast("사진 파일만 올릴 수 있어요."); return; }
+  S.phBusy += list.length; if(S.view === "photos") render();
+  let ok = 0, fail = "";
+  const one = async f => {
+    try{
+      if(/heic|heif/i.test(f.type) || /\.(heic|heif)$/i.test(f.name || "")) throw { code:"heic" };
+      const [date, main] = await Promise.all([photoDate(f), shrink(f)]);
+      if(main.size > 20 * 1024 * 1024) throw { code:"big" };
+      const { w, h, thumb:tb } = await photoThumb(main);
+      const path = await S.B.uploadPhoto(main);
+      let thumb = path;
+      if(tb){ try{ thumb = await S.B.uploadPhoto(tb); }catch(e){ thumb = path; } }
+      if(S.B.kind !== "local"){
+        S.urls.set(path, { url:URL.createObjectURL(main), exp:Date.now() + 3600e3 });
+        if(tb && thumb !== path) S.urls.set(thumb, { url:URL.createObjectURL(tb), exp:Date.now() + 3600e3 });
+      }
+      const now = Date.now(), rec = { id:uuid(), path, thumb, date, caption:"", w, h, createdAt:now, updatedAt:now };
+      S.photos.push(rec); savePhotos(); ok++;
+      enqueue({ op:"row", table:"photos", rec });
+    }catch(err){
+      const m = String(err && (err.message || "") || "");
+      fail = err && err.code === "heic" ? "HEIC 사진은 JPG로 바꿔서 올려 주세요."
+        : err && err.code === "big" || /size|too large|exceed/i.test(m) ? "20MB가 넘는 사진은 올릴 수 없어요."
+        : isNetErr(err) ? "인터넷 연결이 끊겨 일부를 올리지 못했어요." : "일부 사진을 올리지 못했어요.";
+    }finally{ S.phBusy = Math.max(0, S.phBusy - 1); if(S.view === "photos") render(); }
+  };
+  for(let i = 0; i < list.length; i += 3) await Promise.all(list.slice(i, i + 3).map(one));
+  toast(ok ? `사진 ${ok}장을 올렸어요.${fail ? " " + fail : ""}` : (fail || "사진을 올리지 못했어요."));
+}
+function photosHtml(){
+  const list = photosSorted(), groups = [];
+  list.forEach(p => { const g = groups[groups.length - 1]; if(g && g.date === p.date) g.items.push(p); else groups.push({ date:p.date, items:[p] }); });
+  const tile = p => `<button type="button" class="ph-tile" data-photo="${esc(p.id)}" aria-label="${esc(fmtDate(p.date))} 사진${p.caption ? ": " + esc(p.caption) : ""}">${imgTag(p.thumb || p.path)}${isFav("photo", p.id) ? `<i class="ph-star" aria-hidden="true">★</i>` : ""}${p.caption ? `<i class="ph-cap" aria-hidden="true"></i>` : ""}</button>`;
+  return `<div class="ph">
+    <div class="vhead"><h2>사진</h2><span class="sub">${list.length}장</span>
+      <div class="tools"><label class="btn primary ph-add"><input type="file" id="phFile" accept="image/*" multiple hidden>+ 사진 올리기</label></div></div>
+    ${S.phBusy ? `<p class="ph-busy" role="status"><i></i>사진 ${S.phBusy}장 올리는 중…</p>` : ""}
+    ${list.length ? groups.map(g => `<section class="ph-day"><h3>${esc(fmtDate(g.date))}<span>${g.items.length}장</span></h3><div class="ph-grid">${g.items.map(tile).join("")}</div></section>`).join("")
+      : S.phBusy ? "" : `<div class="empty ph-empty"><h3>아직 사진이 없어요</h3><p>위의 ‘사진 올리기’를 누르거나${matchMedia("(hover:hover)").matches ? " 이 화면에 사진을 끌어다 놓으면" : ""} 찍은 날짜별로 모아 보여 드려요.</p></div>`}
+  </div>`;
+}
+function openPhoto(id){ if(!photoById(id)) return; if(OV) endOvKeepHistory(); OV = { kind:"photo", id, edit:false, confirm:false }; renderPhoto(); }
+function renderPhoto(){
+  const list = photosSorted(), i = list.findIndex(p => p.id === OV.id), p = list[i];
+  if(!p){ closeOv(); return; }
+  const fav = isFav("photo", p.id);
+  const foot = OV.confirm
+    ? `<div class="pv-confirm"><span>이 사진을 지울까요? 지우면 되돌릴 수 없어요.</span><button class="btn small danger" type="button" data-act="phDelYes">지우기</button><button class="btn small" type="button" data-act="phDelNo">취소</button></div>`
+    : OV.edit
+    ? `<form class="pv-edit" id="phForm"><label>날짜<input type="date" id="ph-date" value="${esc(p.date)}" required></label><label class="cap">설명<textarea id="ph-cap" rows="2" maxlength="500" placeholder="어떤 사진인지 적어 두세요">${esc(p.caption || "")}</textarea></label><div class="acts"><button class="btn small" type="button" data-act="phEditNo">취소</button><button class="btn small primary" type="submit">저장</button></div></form>`
+    : p.caption ? `<p class="pv-cap">${linkify(p.caption)}</p>` : `<button class="pv-addcap" type="button" data-act="phEdit">+ 설명 추가</button>`;
+  showOv(`<div class="pv" role="dialog" aria-modal="true" aria-label="사진 크게 보기">
+    <div class="pv-top">
+      <button class="pv-btn" type="button" data-act="close" aria-label="닫기"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      <div class="pv-meta"><b>${esc(fmtDate(p.date))}</b><span>${i + 1} / ${list.length}</span></div>
+      <button class="pv-btn fav-btn" type="button" data-fav="photo:${esc(p.id)}" aria-pressed="${fav}" aria-label="즐겨찾기">${fav ? "★" : "☆"}</button>
+      <button class="pv-btn" type="button" data-act="phEdit" aria-label="날짜·설명 편집"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4"/></svg></button>
+      <button class="pv-btn" type="button" data-act="phDel" aria-label="사진 지우기"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button>
+    </div>
+    <div class="pv-stage" id="pvStage">
+      ${i > 0 ? `<button class="pv-nav prev" type="button" data-phnav="-1" aria-label="이전 사진">‹</button>` : ""}
+      <img data-path="${esc(p.path)}" ${purl(p.path) ? `src="${esc(purl(p.path))}"` : purl(p.thumb) ? `src="${esc(purl(p.thumb))}" data-low="1"` : ""} alt="${esc(p.caption || fmtDate(p.date) + " 사진")}">
+      ${i < list.length - 1 ? `<button class="pv-nav next" type="button" data-phnav="1" aria-label="다음 사진">›</button>` : ""}
+    </div>
+    <div class="pv-foot">${foot}</div>
+  </div>`);
+  // the preview shows first; swap in the full photo once its link is signed
+  const img = document.querySelector("#pvStage img");
+  if(img && img.dataset.low) ensureUrls([p.path]).then(() => { const u = purl(p.path); if(u && img.isConnected){ img.src = u; delete img.dataset.low; } });
+  bindPhotoSwipe();
+}
+function phNav(d){
+  const list = photosSorted(), i = list.findIndex(p => p.id === OV.id), j = i + d;
+  if(i < 0 || j < 0 || j >= list.length) return;
+  OV.id = list[j].id; OV.edit = false; OV.confirm = false; renderPhoto();
+}
+function bindPhotoSwipe(){
+  const st = document.getElementById("pvStage"); if(!st) return;
+  let x0 = null, y0 = 0;
+  st.addEventListener("pointerdown", e => { if(e.target.closest("button")) return; x0 = e.clientX; y0 = e.clientY; });
+  st.addEventListener("pointerup", e => {
+    if(x0 == null) return; const dx = e.clientX - x0, dy = e.clientY - y0; x0 = null;
+    if(Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.3) phNav(dx < 0 ? 1 : -1);
+  });
+}
+function savePhotoEdit(){
+  const p = photoById(OV.id); if(!p) return;
+  const date = ($("#ph-date") || {}).value || p.date, caption = (($("#ph-cap") || {}).value || "").trim().slice(0, 500);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){ toast("날짜를 확인해 주세요."); return; }
+  const rec = { ...p, date, caption, updatedAt:Date.now() };
+  S.photos = S.photos.map(x => x.id === p.id ? rec : x); savePhotos();
+  OV.edit = false; renderPhoto(); if(S.view === "photos") render();
+  enqueue({ op:"row", table:"photos", rec });
+}
+function deletePhoto(){
+  const list = photosSorted(), i = list.findIndex(x => x.id === OV.id), p = list[i]; if(!p) return;
+  const next = list[i + 1] || list[i - 1];
+  S.photos = S.photos.filter(x => x.id !== p.id); savePhotos();
+  dropFavs("photo", p.id);
+  enqueue({ op:"rowdel", table:"photos", id:p.id, files:[...new Set([p.path, p.thumb].filter(Boolean))] });
+  if(next){ OV.id = next.id; OV.confirm = false; OV.edit = false; renderPhoto(); } else closeOv();
+  if(S.view === "photos" || S.view === "bookmarks") render();
+  toast("사진을 지웠어요.");
+}
+
+/* ---------- bookmarks: web links + in-app favourites ---------- */
+const favOf = (kind, ref) => S.bookmarks.find(b => b.kind === kind && b.ref === ref);
+const isFav = (kind, ref) => !!favOf(kind, ref);
+const favBtn = (kind, ref) => { const on = isFav(kind, ref); return `<button class="btn small fav-btn" type="button" data-fav="${kind}:${esc(ref)}" aria-pressed="${on}" aria-label="즐겨찾기">${on ? "★" : "☆"}<span class="fav-l">즐겨찾기</span></button>`; };
+function putBookmark(rec){
+  const i = S.bookmarks.findIndex(b => b.id === rec.id);
+  if(i >= 0) S.bookmarks[i] = rec; else S.bookmarks.push(rec);
+  saveBookmarks(); enqueue({ op:"row", table:"bookmarks", rec });
+}
+function dropBookmark(id){
+  if(!S.bookmarks.some(b => b.id === id)) return;
+  S.bookmarks = S.bookmarks.filter(b => b.id !== id); saveBookmarks();
+  enqueue({ op:"rowdel", table:"bookmarks", id });
+}
+function dropFavs(kind, ref){ S.bookmarks.filter(b => b.kind === kind && b.ref === ref).forEach(b => dropBookmark(b.id)); }
+function toggleFav(kind, ref){
+  const b = favOf(kind, ref), now = Date.now();
+  if(b){ dropBookmark(b.id); toast("즐겨찾기에서 뺐어요."); }
+  else { putBookmark({ id:uuid(), kind, ref, url:"", title:"", memo:"", tags:[], createdAt:now, updatedAt:now }); toast("즐겨찾기에 담았어요. 북마크 메뉴에서 모아 볼 수 있어요."); }
+  const on = isFav(kind, ref);
+  document.querySelectorAll(`[data-fav="${kind}:${CSS.escape(ref)}"]`).forEach(btn => {
+    btn.setAttribute("aria-pressed", String(on));
+    if(btn.firstChild) btn.firstChild.textContent = on ? "★" : "☆";
+  });
+  if(S.view === "photos" || S.view === "bookmarks") render();
+}
+const bmHost = u => { try{ return new URL(u).hostname.replace(/^www\./, ""); }catch(e){ return ""; } };
+const BM_TINTS = ["#3D7BFA","#8A63F2","#F04452","#F7931A","#20B46B","#E5468E","#0FA3B1","#6B7A90"];
+function bmIcon(b){
+  const h = bmHost(b.url), ch = (b.title || h || "?").trim().charAt(0).toUpperCase() || "?";
+  const tint = BM_TINTS[[...h].reduce((a, c) => a + c.charCodeAt(0), 0) % BM_TINTS.length];
+  return `<span class="bm-ic" style="--tint:${tint}"><i aria-hidden="true">${esc(ch)}</i>${h ? `<img class="bm-fav" src="https://icons.duckduckgo.com/ip3/${encodeURIComponent(h)}.ico" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}</span>`;
+}
+function bookmarksHtml(){
+  const links = S.bookmarks.filter(b => b.kind === "link");
+  const favs = favItems(), nf = favs.entries.length + favs.stocks.length + favs.photos.length;
+  return `<div class="bm">
+    <div class="vhead"><h2>북마크</h2>
+      <div class="tools"><div class="seg bm-seg" role="group" aria-label="북마크 종류">
+        <button type="button" data-bmtab="links" aria-pressed="${S.bmTab !== "favs"}">웹 링크 <span class="mono">${links.length}</span></button>
+        <button type="button" data-bmtab="favs" aria-pressed="${S.bmTab === "favs"}">앱 즐겨찾기 <span class="mono">${nf}</span></button>
+      </div></div></div>
+    ${S.bmTab === "favs" ? favsHtml(favs) : linksHtml(links)}
+  </div>`;
+}
+function linksHtml(links){
+  const tags = [...new Set(links.flatMap(b => b.tags || []))].sort((a, b) => a.localeCompare(b));
+  if(S.bmTag && !tags.includes(S.bmTag)) S.bmTag = null;
+  const list = links.filter(b => !S.bmTag || (b.tags || []).includes(S.bmTag)).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const row = b => {
+    const h = bmHost(b.url), loading = S.bmLoading.has(b.id);
+    return `<article class="bm-row">
+      <a class="bm-main" href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">${bmIcon(b)}
+        <span class="bm-tx"><b>${esc(b.title || h || b.url)}</b><small>${esc(h)}${loading ? " · 제목 불러오는 중…" : ""} · ${esc(fmtDate(ymd(new Date(b.createdAt || Date.now()))))}</small>
+        ${b.memo ? `<span class="bm-memo">${esc(b.memo)}</span>` : ""}${(b.tags || []).length ? `<span class="bm-tags">${b.tags.map(t => "#" + esc(t)).join(" ")}</span>` : ""}</span></a>
+      <button type="button" class="bm-more" data-bmedit="${esc(b.id)}" aria-label="${esc(b.title || h)} 편집"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
+    </article>`;
+  };
+  return `<form class="bm-add" id="bmAdd" autocomplete="off">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></svg>
+      <input id="bmUrl" type="text" inputmode="url" placeholder="저장할 웹 주소를 붙여 넣으세요" aria-label="웹 주소" spellcheck="false">
+      <button class="btn primary" type="submit">저장</button>
+    </form>
+    ${tags.length ? `<div class="mfilters bm-tagrow">${tags.map(t => `<button type="button" class="chip ${S.bmTag === t ? "on" : ""}" data-bmtag="${esc(t)}">#${esc(t)}</button>`).join("")}</div>` : ""}
+    ${list.length ? `<div class="bm-list">${list.map(row).join("")}</div>`
+      : `<div class="empty"><h3>${S.bmTag ? "이 태그의 링크가 없어요" : "저장한 링크가 없어요"}</h3><p>읽을거리, 자주 가는 사이트, 나중에 볼 영상 주소를 붙여 넣으면 제목과 사이트 아이콘을 붙여 정리해 드려요.</p></div>`}`;
+}
+function favItems(){
+  const f = S.bookmarks.filter(b => b.kind !== "link").sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const pick = (kind, arr) => f.filter(b => b.kind === kind).map(b => arr.find(x => x.id === b.ref)).filter(Boolean);
+  return { entries:pick("entry", S.entries), stocks:pick("stock", S.stocks), photos:pick("photo", S.photos) };
+}
+function favsHtml(fv){
+  const star = (kind, id, label) => `<button type="button" class="bm-star fav-btn" data-fav="${kind}:${esc(id)}" aria-pressed="true" aria-label="${esc(label)} 즐겨찾기 빼기">★</button>`;
+  const entryRow = e => `<article class="bm-row"><button type="button" class="bm-main" data-open="${esc(e.id)}">
+      <span class="bm-thumb">${(e.photos || []).length ? imgTag(e.photos[0]) : `<i>${esc(e.cat || "")}</i>`}</span>
+      <span class="bm-tx"><b>${esc(e.title || "제목 없음")}</b><small>${sheetNo(e)} · ${esc(catOf(e.cat).name)} · ${esc(fmtDate(e.date))}</small></span></button>${star("entry", e.id, e.title)}</article>`;
+  const stockRow = s => { const q = quoteOf(s);
+    return `<article class="bm-row"><button type="button" class="bm-main" data-stock="${esc(s.id)}">${avaHtml(s)}
+      <span class="bm-tx"><b>${esc(s.name)}</b><small>${esc(s.symbol)}</small></span>
+      <span class="bm-px">${q && num(q.price) ? `<b>${fmtMoney(q.price, s.currency)}</b><small class="${tone(q.changePct)}">${fmtPct(q.changePct)}</small>` : ""}</span></button>${star("stock", s.id, s.name)}</article>`; };
+  const n = fv.entries.length + fv.stocks.length + fv.photos.length;
+  if(!n) return `<div class="empty"><h3>아직 즐겨찾기가 없어요</h3><p>기록, 주식 종목, 사진을 열고 ☆ 즐겨찾기를 누르면 여기에 모여요.</p></div>`;
+  return `${fv.entries.length ? `<section class="bm-sec"><h3>기록<span>${fv.entries.length}</span></h3><div class="bm-list">${fv.entries.map(entryRow).join("")}</div></section>` : ""}
+    ${fv.stocks.length ? `<section class="bm-sec"><h3>주식<span>${fv.stocks.length}</span></h3><div class="bm-list">${fv.stocks.map(stockRow).join("")}</div></section>` : ""}
+    ${fv.photos.length ? `<section class="bm-sec"><h3>사진<span>${fv.photos.length}</span></h3><div class="ph-grid bm-ph">${fv.photos.map(p => `<button type="button" class="ph-tile" data-photo="${esc(p.id)}" aria-label="${esc(fmtDate(p.date))} 사진">${imgTag(p.thumb || p.path)}</button>`).join("")}</div></section>` : ""}`;
+}
+function normUrl(raw){
+  let u = String(raw || "").trim(); if(!u) return null;
+  if(!/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) u = "https://" + u;
+  try{ const x = new URL(u); if(!/^https?:$/.test(x.protocol) || !x.hostname.includes(".")) return null; return x.href; }catch(e){ return null; }
+}
+function addLink(){
+  const inp = $("#bmUrl"); const href = normUrl(inp && inp.value);
+  if(!href){ toast(inp && inp.value.trim() ? "웹 주소가 올바르지 않아요." : "저장할 웹 주소를 붙여 넣어 주세요."); return; }
+  if(S.bookmarks.some(b => b.kind === "link" && b.url === href)){ toast("이미 저장한 링크예요."); return; }
+  const now = Date.now(), rec = { id:uuid(), kind:"link", ref:"", url:href, title:"", memo:"", tags:[], createdAt:now, updatedAt:now };
+  S.bmTag = null; putBookmark(rec); render(); toast("링크를 저장했어요.");
+  fetchLinkTitle(rec.id);
+}
+async function fetchLinkTitle(id){
+  const b = S.bookmarks.find(x => x.id === id);
+  if(!b || b.title || !S.B || S.B.kind === "local" || !navigator.onLine) return;
+  S.bmLoading.add(id); if(S.view === "bookmarks") render();
+  try{
+    const d = await S.B.invoke({ action:"linkmeta", url:b.url });
+    const cur = S.bookmarks.find(x => x.id === id);
+    const title = d && String(d.title || "").replace(/\s+/g, " ").trim().slice(0, 200);
+    if(cur && !cur.title && title) putBookmark({ ...cur, title, updatedAt:Date.now() });
+  }catch(e){}
+  finally{ S.bmLoading.delete(id); if(S.view === "bookmarks") render(); if(OV && OV.kind === "bmform" && OV.id === id) renderBmForm(); }
+}
+function openBmForm(id){
+  const b = S.bookmarks.find(x => x.id === id); if(!b) return;
+  if(OV) endOvKeepHistory(); OV = { kind:"bmform", id, confirm:false, err:"" }; renderBmForm();
+}
+function renderBmForm(){
+  const b = S.bookmarks.find(x => x.id === OV.id); if(!b){ closeOv(); return; }
+  const keep = OV.draft;
+  showOv(`<div class="sheetbox" role="dialog" aria-modal="true" aria-label="링크 편집">
+    <div class="sb-head"><span class="ttl">링크 편집</span><div class="sp"><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
+    <form id="bmForm" class="sb-body bm-form" autocomplete="off">
+      <div class="fld"><label for="bm-url">웹 주소</label><input id="bm-url" type="text" inputmode="url" value="${esc(keep ? keep.url : b.url)}" spellcheck="false" required></div>
+      <div class="fld"><label for="bm-title">제목</label><input id="bm-title" type="text" maxlength="200" value="${esc(keep ? keep.title : b.title)}" placeholder="${esc(bmHost(b.url))}"></div>
+      <div class="fld"><label for="bm-memo">메모</label><textarea id="bm-memo" rows="3" maxlength="1000" placeholder="왜 저장했는지 적어 두면 나중에 찾기 쉬워요">${esc(keep ? keep.memo : b.memo)}</textarea></div>
+      <div class="fld"><label for="bm-tags">태그</label><input id="bm-tags" type="text" value="${esc(keep ? keep.tags : (b.tags || []).join(", "))}" placeholder="쉼표로 나눠 적어요 (예: 읽을거리, 건축)"></div>
+      ${OV.err ? `<p class="err" style="margin:0;color:var(--danger);font-size:13px">${esc(OV.err)}</p>` : ""}
+      <div class="bm-facts"><a href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">링크 열기 ↗</a><span>${esc(fmtDate(ymd(new Date(b.createdAt || Date.now()))))} 저장</span></div>
+      <div class="sb-foot bm-foot">${OV.confirm
+        ? `<span class="bm-q">이 링크를 지울까요?</span><button class="btn small danger" type="button" data-act="bmDelYes">지우기</button><button class="btn small" type="button" data-act="bmDelNo">취소</button>`
+        : `<button class="btn ghost danger" type="button" data-act="bmDel">지우기</button><span class="sp"></span><button class="btn" type="button" data-act="close">취소</button><button class="btn primary" type="submit">저장</button>`}</div>
+    </form></div>`);
+}
+function bmDraft(){ return { url:($("#bm-url") || {}).value || "", title:($("#bm-title") || {}).value || "", memo:($("#bm-memo") || {}).value || "", tags:($("#bm-tags") || {}).value || "" }; }
+function saveBm(){
+  const b = S.bookmarks.find(x => x.id === OV.id); if(!b) return;
+  const d = bmDraft(), href = normUrl(d.url);
+  if(!href){ OV.draft = d; OV.err = "웹 주소가 올바르지 않아요."; renderBmForm(); return; }
+  const tags = [...new Set(d.tags.split(/[,#]/).map(s => s.trim()).filter(Boolean).map(s => s.slice(0, 30)))].slice(0, 20);
+  putBookmark({ ...b, url:href, title:d.title.trim().slice(0, 200), memo:d.memo.trim().slice(0, 1000), tags, updatedAt:Date.now() });
+  closeOv(); render(); toast("링크를 저장했어요.");
+}
+function deleteBm(){ const id = OV.id; closeOv(); dropBookmark(id); render(); toast("링크를 지웠어요."); }
+
+// drop photos anywhere on the album screen (computer)
+document.addEventListener("dragover", ev => { if(S.view === "photos" && !OV && ev.dataTransfer && [...ev.dataTransfer.types].includes("Files")){ ev.preventDefault(); document.body.classList.add("ph-drop"); } });
+document.addEventListener("dragleave", ev => { if(!ev.relatedTarget) document.body.classList.remove("ph-drop"); });
+document.addEventListener("drop", ev => {
+  document.body.classList.remove("ph-drop");
+  if(S.view !== "photos" || OV || !ev.dataTransfer || !ev.dataTransfer.files.length) return;
+  ev.preventDefault(); uploadAlbum(ev.dataTransfer.files);
+});
 
 /* ---------- bitcoin ---------- */
 // Live prices come straight from the exchanges' public websockets (KRW: Upbit or Bithumb, USD: Binance)
@@ -2970,6 +3317,13 @@ document.addEventListener("click", ev => {
     return;
   }
   if(ds.view){ S.view = ds.view; render(); window.scrollTo({ top:0 }); if(S.view === "stocks"){ refreshQuotes(); loadBroker(); } return; }
+  // photos & bookmarks
+  if(ds.fav){ const c = ds.fav.indexOf(":"); toggleFav(ds.fav.slice(0, c), ds.fav.slice(c + 1)); return; }
+  if(ds.photo){ openPhoto(ds.photo); return; }
+  if(ds.phnav){ phNav(+ds.phnav); return; }
+  if(ds.bmtab){ S.bmTab = ds.bmtab; savePrefs(); render(); return; }
+  if(ds.bmtag){ S.bmTag = S.bmTag === ds.bmtag ? null : ds.bmtag; render(); return; }
+  if(ds.bmedit){ openBmForm(ds.bmedit); return; }
   // bitcoin
   if(ds.bttab){ btSetTab(ds.bttab); return; }
   if(ds.btmenu){ BT.menu = BT.menu === ds.btmenu ? null : ds.btmenu; btPaintMenus(); return; }
@@ -3015,6 +3369,14 @@ document.addEventListener("click", ev => {
   if(ds.themeSet){ applyTheme(ds.themeSet); renderSettings(); return; }
   switch(ds.act){
     case "new": openEditor(null); break;
+    case "phEdit": OV.edit = true; OV.confirm = false; renderPhoto(); { const c = $("#ph-cap"); if(c) c.focus(); } break;
+    case "phEditNo": OV.edit = false; renderPhoto(); break;
+    case "phDel": OV.confirm = true; OV.edit = false; renderPhoto(); break;
+    case "phDelNo": OV.confirm = false; renderPhoto(); break;
+    case "phDelYes": deletePhoto(); break;
+    case "bmDel": OV.draft = bmDraft(); OV.confirm = true; renderBmForm(); break;
+    case "bmDelNo": OV.confirm = false; renderBmForm(); break;
+    case "bmDelYes": deleteBm(); break;
     case "btSet": openBtSet(); break;
     case "bcClear": { BT.conv.amt = ""; const i = $("#bcAmt"); if(i){ i.value = ""; i.focus(); } btPaintConvert(); break; }
     case "bkPaste": btPaste(); break;
@@ -3076,6 +3438,7 @@ $("#syncBtn").addEventListener("click", () => { if(S.B && S.B.kind !== "local") 
 document.addEventListener("keydown", ev => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target.tagName);
   if(ev.key === "Escape" && OV){ closeOv(); return; }
+  if(OV && OV.kind === "photo" && !typing && !OV.edit && (ev.key === "ArrowLeft" || ev.key === "ArrowRight")){ ev.preventDefault(); phNav(ev.key === "ArrowLeft" ? -1 : 1); return; }
   if(ev.key === "Escape" && BT.menu){ BT.menu = null; btPaintMenus(); return; }
   if(OV && OV.kind === "edit"){
     if((ev.metaKey || ev.ctrlKey) && ev.key === "Enter"){ ev.preventDefault(); if(!OV.busy) saveDraft(); return; }
@@ -3100,12 +3463,13 @@ document.addEventListener("change", ev => {
     if(OV.d.currency === "USD" && !fxRate()) refreshQuotes(true, []);
   }
   if(t.id === "f-photo" && t.files.length){ uploadPhotos(t.files); }
+  if(t.id === "phFile" && t.files.length){ const fs = [...t.files]; t.value = ""; uploadAlbum(fs); }
   if(t.id === "f-cat" && OV){ OV.draft.cat = t.value; }
   if(t.id === "importFile" && t.files.length){
     const f = t.files[0];
     f.text().then(txt => {
       let res; try{ res = parseImport(txt); }catch(e){ toast("산시야 백업 파일(JSON)이 아니에요."); return; }
-      if(!res.entries.length && !res.stocks.length && !res.divs.length){ toast("가져올 기록이 없어요."); return; }
+      if(!res.entries.length && !res.stocks.length && !res.divs.length && !res.photos.length && !res.bookmarks.length){ toast("가져올 기록이 없어요."); return; }
       openImport(res);
     });
   }
@@ -3117,6 +3481,9 @@ document.addEventListener("submit", ev => {
   else if(ev.target.id === "divForm") saveDivForm();
   else if(ev.target.id === "gateForm") gateSubmit(ev.target);
   else if(ev.target.id === "bkSearch") btSearch();
+  else if(ev.target.id === "bmAdd") addLink();
+  else if(ev.target.id === "bmForm") saveBm();
+  else if(ev.target.id === "phForm") savePhotoEdit();
 });
 document.addEventListener("paste", ev => {
   if(!OV || OV.kind !== "edit") return;
@@ -3182,9 +3549,10 @@ async function boot(){
 async function startApp(user){
   resetState();
   S.uid = user.id; S.email = user.email || "";
-  const [ents, st, ob, ls, urls, stx, dvs, qts] = await Promise.all(["entries","settings","outbox","lastSync","urls","stocks","divs","quotes"].map(n => KV.get(k(n))));
+  const [ents, st, ob, ls, urls, stx, dvs, qts, phs, bms] = await Promise.all(["entries","settings","outbox","lastSync","urls","stocks","divs","quotes","photos","bookmarks"].map(n => KV.get(k(n))));
   S.entries = Array.isArray(ents) ? ents : []; S.loaded = Array.isArray(ents);
   S.stocks = Array.isArray(stx) ? stx : []; S.divs = Array.isArray(dvs) ? dvs : [];
+  S.photos = Array.isArray(phs) ? phs : []; S.bookmarks = Array.isArray(bms) ? bms : [];
   if(qts && qts.quotes){ S.quotes = qts.quotes; S.fx = qts.fx || null; S.quotesAt = qts.at || 0; S.market = qts.market || {}; }
   if(st && Array.isArray(st.categories) && st.categories.length) S.cats = st.categories;
   S.outbox = Array.isArray(ob) ? ob : []; S.lastSync = ls || 0;
