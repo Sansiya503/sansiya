@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.12.1";
+const APP_VERSION = "1.12.2";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -126,9 +126,9 @@ const TABLES = {
   photos: {
     order: ["date", false],
     from: r => ({ id:r.id, path:r.path, thumb:r.thumb || "", date:r.date, caption:r.caption || "", w:+r.width || 0, h:+r.height || 0,
-      createdAt:Date.parse(r.created_at) || 0, updatedAt:Date.parse(r.updated_at) || 0 }),
+      topics:Array.isArray(r.topics) ? r.topics : [], createdAt:Date.parse(r.created_at) || 0, updatedAt:Date.parse(r.updated_at) || 0 }),
     to: (p, uid) => ({ id:p.id, user_id:uid, path:p.path, thumb:p.thumb || "", date:p.date, caption:p.caption || "", width:p.w || null, height:p.h || null,
-      created_at:isoT(p.createdAt), updated_at:isoT(p.updatedAt) })
+      topics:p.topics || [], created_at:isoT(p.createdAt), updated_at:isoT(p.updatedAt) })
   },
   bookmarks: {
     order: ["created_at", false],
@@ -313,10 +313,10 @@ const S = {
   stocks:[], divs:[], quotes:{}, fx:null, quotesAt:0, qLoading:false, qErr:"",
   stockTab:"hold", divYear:new Date().getFullYear(), hist:{}, market:{}, broker:undefined, showHidden:false,
   holdSort:"value", holdShow:"value", hideAmt:false,
-  photos:[], bookmarks:[], albumMissing:false, phBusy:0, phQ:"", phFav:false, bmTab:"links", bmTag:null, bmLoading:new Set()
+  photos:[], bookmarks:[], albumMissing:false, phBusy:0, phQ:"", phFav:false, phTopic:"all", phLimit:120, bmTab:"links", bmTag:null, bmLoading:new Set()
 };
-try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; if(p.bmTab === "favs") S.bmTab = "favs"; }catch(e){}
-function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort, holdSort:S.holdSort, holdShow:S.holdShow, hideAmt:S.hideAmt, bmTab:S.bmTab })); }catch(e){} }
+try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; if(p.bmTab === "favs") S.bmTab = "favs"; if(p.phTopic) S.phTopic = p.phTopic; }catch(e){}
+function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort, holdSort:S.holdSort, holdShow:S.holdShow, hideAmt:S.hideAmt, bmTab:S.bmTab, phTopic:S.phTopic })); }catch(e){} }
 const k = name => `u:${S.uid}:${name}`;
 const saveCache = () => KV.set(k("entries"), S.entries);
 const saveOutbox = () => KV.set(k("outbox"), S.outbox);
@@ -517,6 +517,7 @@ function render(){
     const a = document.activeElement;
     if(m.querySelector(".ph") && a && a.id === "phQ") setH("phBody", phBodyHtml());
     else m.innerHTML = photosHtml();
+    bindPhotoMore();
   }
   else if(S.view === "bookmarks"){ m.innerHTML = bookmarksHtml(); if(S.bmTab === "favs" && favItems().stocks.length) refreshQuotes(); }
   else m.innerHTML = statsHtml();
@@ -2161,7 +2162,7 @@ function parseImport(text){
   const now2 = Date.now();
   const photos = (Array.isArray(j.photos) ? j.photos : []).filter(r => r && typeof r.path === "string" && S.uid && r.path.startsWith(S.uid + "/") && !S.photos.some(p => p.path === r.path))
     .map(r => ({ id:isUuid(r.id) ? r.id : uuid(), path:r.path, thumb:typeof r.thumb === "string" && r.thumb.startsWith(S.uid + "/") ? r.thumb : r.path, date:/^\d{4}-\d{2}-\d{2}$/.test(r.date || "") ? r.date : today(),
-      caption:String(r.caption || "").slice(0, 500), w:+r.w || 0, h:+r.h || 0, createdAt:+r.createdAt || now2, updatedAt:+r.updatedAt || now2 }));
+      caption:String(r.caption || "").slice(0, 500), w:+r.w || 0, h:+r.h || 0, topics:Array.isArray(r.topics) ? r.topics.filter(x => PH_TOPIC_KEYS.includes(x)) : [], createdAt:+r.createdAt || now2, updatedAt:+r.updatedAt || now2 }));
   const bookmarks = (Array.isArray(j.bookmarks) ? j.bookmarks : []).filter(r => r && ["link","entry","stock","photo"].includes(r.kind))
     .filter(r => r.kind === "link" ? normUrl(r.url) && !S.bookmarks.some(b => b.kind === "link" && b.url === normUrl(r.url)) : r.ref && !S.bookmarks.some(b => b.kind === r.kind && b.ref === r.ref))
     .map(r => ({ id:isUuid(r.id) ? r.id : uuid(), kind:r.kind, ref:String(r.ref || ""), url:r.kind === "link" ? normUrl(r.url) : "", title:String(r.title || "").slice(0, 200), memo:String(r.memo || "").slice(0, 1000),
@@ -2403,7 +2404,7 @@ async function uploadAlbum(files){
         S.urls.set(path, { url:URL.createObjectURL(main), exp:Date.now() + 3600e3 });
         if(tb && thumb !== path) S.urls.set(thumb, { url:URL.createObjectURL(tb), exp:Date.now() + 3600e3 });
       }
-      const now = Date.now(), rec = { id:uuid(), path, thumb, date, caption:"", w, h, createdAt:now, updatedAt:now };
+      const now = Date.now(), rec = { id:uuid(), path, thumb, date, caption:"", w, h, topics:PH_TOPIC_KEYS.includes(S.phTopic) ? [S.phTopic] : [], createdAt:now, updatedAt:now };
       S.photos.push(rec); savePhotos(); ok++;
       enqueue({ op:"row", table:"photos", rec });
     }catch(err){
@@ -2427,31 +2428,67 @@ function phMatches(p, q){
   const hay = [p.caption || "", fmtDate(p.date), `${y}`, `${y}.${m}`, `${y}-${m}`, `${y}년 ${+m}월`, `${+m}월 ${+d}일`, `${+m}월`].join(" ").toLowerCase();
   return q.split(/\s+/).filter(Boolean).every(w => hay.includes(w));
 }
+const PH_TOPICS = [["all","All"],["travel","여행"],["food","음식"],["design","디자인"],["arch","건축"],["landscape","조경"],["interior","인테리어"]];
+const PH_TOPIC_KEYS = PH_TOPICS.slice(1).map(t => t[0]);
+const phTopicName = k => (PH_TOPICS.find(t => t[0] === k) || [k, k])[1];
+const PH_PAGE = 120; // tiles added per scroll step (20 rows of 6)
 function phList(){
-  const q = S.phQ.trim().toLowerCase();
-  return photosSorted().filter(p => (!S.phFav || isFav("photo", p.id)) && (!q || phMatches(p, q)));
+  const q = S.phQ.trim().toLowerCase(), tp = PH_TOPIC_KEYS.includes(S.phTopic) ? S.phTopic : null;
+  return photosSorted().filter(p => (!tp || (p.topics || []).includes(tp)) && (!S.phFav || isFav("photo", p.id)) && (!q || phMatches(p, q)));
+}
+function phTileHtml(p){
+  return `<button type="button" class="ph-tile" data-photo="${esc(p.id)}" aria-label="${esc(fmtDate(p.date))} 사진${p.caption ? ": " + esc(p.caption) : ""}">${imgTag(p.thumb || p.path)}${isFav("photo", p.id) ? `<i class="ph-star" aria-hidden="true">${PH_ICON.mark}</i>` : ""}${p.caption ? `<span class="ph-hover" aria-hidden="true">${esc(p.caption)}</span>` : ""}</button>`;
 }
 function photosHtml(){
   return `<div class="ph">
-    <div class="ph-bar">
+    <div class="ph-head"><div class="ph-bar">
       <label class="ph-search">${PH_ICON.search}<input id="phQ" type="search" placeholder="검색" value="${esc(S.phQ)}" autocomplete="off" enterkeyhint="search" aria-label="사진 설명이나 날짜로 검색"></label>
       <label class="ph-ic ph-add" title="사진 올리기"><input type="file" id="phFile" accept="image/*" multiple hidden aria-label="사진 올리기">${PH_ICON.add}</label>
       <button type="button" class="ph-ic ph-mark" data-act="phFav" aria-pressed="${S.phFav}" aria-label="즐겨찾기한 사진만 보기" title="즐겨찾기한 사진만">${PH_ICON.mark}</button>
     </div>
+    <div class="ph-topics" role="group" aria-label="사진 주제">${PH_TOPICS.map(([k, l]) => `<button type="button" data-phtopic="${k}" aria-pressed="${S.phTopic === k || (k === "all" && !PH_TOPIC_KEYS.includes(S.phTopic))}">${l}</button>`).join("")}</div></div>
     <div id="phBody">${phBodyHtml()}</div>
   </div>`;
 }
 function phBodyHtml(){
-  const list = phList(), q = S.phQ.trim();
-  const tile = p => `<button type="button" class="ph-tile" data-photo="${esc(p.id)}" aria-label="${esc(fmtDate(p.date))} 사진${p.caption ? ": " + esc(p.caption) : ""}">${imgTag(p.thumb || p.path)}${isFav("photo", p.id) ? `<i class="ph-star" aria-hidden="true">${PH_ICON.mark}</i>` : ""}${p.caption ? `<span class="ph-hover" aria-hidden="true">${esc(p.caption)}</span>` : ""}</button>`;
+  const list = phList(), q = S.phQ.trim(), tp = PH_TOPIC_KEYS.includes(S.phTopic) ? S.phTopic : null;
   const waiting = Array.from({ length:S.phBusy }, () => `<div class="ph-tile ph-wait" aria-hidden="true"></div>`).join("");
-  const status = S.phBusy ? `<p class="ph-busy" role="status"><i></i>사진 ${S.phBusy}장 올리는 중…</p>` : "";
+  const status = S.phBusy ? `<p class="ph-busy" role="status"><i></i>사진 ${S.phBusy}장 올리는 중…${tp ? ` ‘${phTopicName(tp)}’에 넣을게요.` : ""}</p>` : "";
   if(!list.length && !S.phBusy){
-    if(!S.photos.length) return `<div class="empty ph-empty"><h3>아직 사진이 없어요</h3><p>위쪽 ＋를 눌러 사진을 올려 보세요.${matchMedia("(hover:hover)").matches ? " 이 화면에 끌어다 놓아도 돼요." : ""} 새로 올린 사진이 맨 앞에 와요.</p></div>`;
-    return `<div class="empty ph-empty"><h3>${q ? `‘${esc(q)}’에 맞는 사진이 없어요` : "즐겨찾기한 사진이 없어요"}</h3><p>${q ? "설명에 쓴 낱말이나 2024.05, 5월 17일처럼 날짜로 찾아보세요." : "사진을 크게 연 뒤 ☆를 누르면 여기에 모여요."}</p></div>`;
+    if(!S.photos.length) return `<div class="empty ph-empty"><h3>아직 사진이 없어요</h3><p>위쪽 ＋를 눌러 사진을 올려 보세요.${matchMedia("(hover:hover)").matches ? " 이 화면에 끌어다 놓아도 돼요." : ""} 주제를 고른 채로 올리면 그 주제에 바로 들어가요.</p></div>`;
+    if(q) return `<div class="empty ph-empty"><h3>‘${esc(q)}’에 맞는 사진이 없어요</h3><p>설명에 쓴 낱말이나 2024.05, 5월 17일처럼 날짜로 찾아보세요.${tp ? ` 지금은 ‘${phTopicName(tp)}’ 안에서만 찾고 있어요.` : ""}</p></div>`;
+    if(S.phFav) return `<div class="empty ph-empty"><h3>즐겨찾기한 ${tp ? `‘${phTopicName(tp)}’ ` : ""}사진이 없어요</h3><p>사진을 크게 연 뒤 ☆를 누르면 여기에 모여요.</p></div>`;
+    return `<div class="empty ph-empty"><h3>‘${phTopicName(tp)}’ 사진이 아직 없어요</h3><p>이 주제를 고른 채로 ＋를 눌러 올리거나, 사진을 크게 열고 편집에서 주제를 골라 주세요.</p></div>`;
   }
-  const note = q || S.phFav ? `${q ? `‘${esc(q)}’ ` : ""}${S.phFav ? "즐겨찾기 " : ""}사진 ${list.length}장` : `사진 ${S.photos.length}장`;
-  return `${status}<div class="ph-grid ph-insta">${waiting}${list.map(tile).join("")}</div><p class="ph-count">${note}</p>`;
+  const shown = Math.min(list.length, Math.max(S.phLimit, PH_PAGE));
+  const label = [tp ? `‘${phTopicName(tp)}’` : "", q ? `‘${esc(q)}’` : "", S.phFav ? "즐겨찾기" : ""].filter(Boolean).join(" · ");
+  return `${status}<div class="ph-grid ph-insta" id="phGrid">${waiting}${list.slice(0, shown).map(phTileHtml).join("")}</div>
+    ${shown < list.length ? `<div class="ph-more" id="phMore" aria-hidden="true"><i></i></div>` : `<p class="ph-count">${label ? label + " " : ""}사진 ${list.length}장</p>`}`;
+}
+// endless scroll: add the next rows when the bottom comes into view
+let phIO = null;
+function bindPhotoMore(){
+  if(phIO){ phIO.disconnect(); phIO = null; }
+  const more = document.getElementById("phMore"); if(!more || !("IntersectionObserver" in window)) return;
+  phIO = new IntersectionObserver(ents => {
+    if(!ents.some(e => e.isIntersecting)) return;
+    const list = phList(), grid = document.getElementById("phGrid"); if(!grid) return;
+    const from = grid.querySelectorAll(".ph-tile:not(.ph-wait)").length, to = Math.min(list.length, from + PH_PAGE);
+    S.phLimit = to;
+    grid.insertAdjacentHTML("beforeend", list.slice(from, to).map(phTileHtml).join(""));
+    hydrateImages();
+    if(to >= list.length){
+      phIO.disconnect(); phIO = null;
+      more.outerHTML = `<p class="ph-count">사진 ${list.length}장</p>`;
+    }
+  }, { rootMargin:"900px 0px" });
+  phIO.observe(more);
+}
+function phSetTopic(k){
+  S.phTopic = PH_TOPIC_KEYS.includes(k) ? k : "all"; S.phLimit = PH_PAGE; savePrefs();
+  document.querySelectorAll(".ph-topics [data-phtopic]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.phtopic === S.phTopic)));
+  const chip = document.querySelector(`.ph-topics [data-phtopic="${S.phTopic}"]`); if(chip && chip.scrollIntoView) chip.scrollIntoView({ block:"nearest", inline:"nearest" });
+  setH("phBody", phBodyHtml()); bindPhotoMore(); hydrateImages();
 }
 function openPhoto(id){
   if(!photoById(id)) return;
@@ -2466,8 +2503,8 @@ function renderPhoto(){
   const foot = OV.confirm
     ? `<div class="pv-confirm"><span>이 사진을 지울까요? 지우면 되돌릴 수 없어요.</span><button class="btn small danger" type="button" data-act="phDelYes">지우기</button><button class="btn small" type="button" data-act="phDelNo">취소</button></div>`
     : OV.edit
-    ? `<form class="pv-edit" id="phForm"><label>날짜<input type="date" id="ph-date" value="${esc(p.date)}" required></label><label class="cap">설명<textarea id="ph-cap" rows="2" maxlength="500" placeholder="어떤 사진인지 적어 두세요">${esc(p.caption || "")}</textarea></label><div class="acts"><button class="btn small" type="button" data-act="phEditNo">취소</button><button class="btn small primary" type="submit">저장</button></div></form>`
-    : p.caption ? `<p class="pv-cap">${linkify(p.caption)}</p>` : `<button class="pv-addcap" type="button" data-act="phEdit">+ 설명 추가</button>`;
+    ? `<form class="pv-edit" id="phForm"><div class="pv-tps" role="group" aria-label="주제">${PH_TOPICS.slice(1).map(([k, l]) => `<button type="button" class="pv-tp" data-pvtopic="${k}" aria-pressed="${(p.topics || []).includes(k)}">${l}</button>`).join("")}</div><label>날짜<input type="date" id="ph-date" value="${esc(p.date)}" required></label><label class="cap">설명<textarea id="ph-cap" rows="2" maxlength="500" placeholder="어떤 사진인지 적어 두세요">${esc(p.caption || "")}</textarea></label><div class="acts"><button class="btn small" type="button" data-act="phEditNo">취소</button><button class="btn small primary" type="submit">저장</button></div></form>`
+    : `${(p.topics || []).length ? `<div class="pv-tags">${p.topics.filter(k => PH_TOPIC_KEYS.includes(k)).map(k => `<button type="button" data-phgo="${k}">#${phTopicName(k)}</button>`).join("")}</div>` : ""}${p.caption ? `<p class="pv-cap">${linkify(p.caption)}</p>` : `<button class="pv-addcap" type="button" data-act="phEdit">+ ${(p.topics || []).length ? "설명 추가" : "주제·설명 추가"}</button>`}`;
   showOv(`<div class="pv" role="dialog" aria-modal="true" aria-label="사진 크게 보기">
     <div class="pv-top">
       <button class="pv-btn" type="button" data-act="close" aria-label="닫기"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
@@ -2506,7 +2543,8 @@ function savePhotoEdit(){
   const p = photoById(OV.id); if(!p) return;
   const date = ($("#ph-date") || {}).value || p.date, caption = (($("#ph-cap") || {}).value || "").trim().slice(0, 500);
   if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){ toast("날짜를 확인해 주세요."); return; }
-  const rec = { ...p, date, caption, updatedAt:Date.now() };
+  const topics = [...document.querySelectorAll("#phForm [data-pvtopic][aria-pressed=true]")].map(b => b.dataset.pvtopic);
+  const rec = { ...p, date, caption, topics, updatedAt:Date.now() };
   S.photos = S.photos.map(x => x.id === p.id ? rec : x); savePhotos();
   OV.edit = false; renderPhoto(); if(S.view === "photos") render();
   enqueue({ op:"row", table:"photos", rec });
@@ -3357,6 +3395,9 @@ document.addEventListener("click", ev => {
   if(ds.fav){ const c = ds.fav.indexOf(":"); toggleFav(ds.fav.slice(0, c), ds.fav.slice(c + 1)); return; }
   if(ds.photo){ openPhoto(ds.photo); return; }
   if(ds.phnav){ phNav(+ds.phnav); return; }
+  if(ds.phtopic){ phSetTopic(ds.phtopic); return; }
+  if(ds.pvtopic){ t.setAttribute("aria-pressed", String(t.getAttribute("aria-pressed") !== "true")); return; }
+  if(ds.phgo){ const k = ds.phgo; closeOv(); if(S.view !== "photos"){ S.view = "photos"; } S.phQ = ""; S.phFav = false; S.phTopic = k; S.phLimit = PH_PAGE; savePrefs(); render(); window.scrollTo({ top:0 }); return; }
   if(ds.bmtab){ S.bmTab = ds.bmtab; savePrefs(); render(); return; }
   if(ds.bmtag){ S.bmTag = S.bmTag === ds.bmtag ? null : ds.bmtag; render(); return; }
   if(ds.bmedit){ openBmForm(ds.bmedit); return; }
@@ -3405,7 +3446,7 @@ document.addEventListener("click", ev => {
   if(ds.themeSet){ applyTheme(ds.themeSet); renderSettings(); return; }
   switch(ds.act){
     case "new": openEditor(null); break;
-    case "phFav": S.phFav = !S.phFav; render(); break;
+    case "phFav": S.phFav = !S.phFav; S.phLimit = PH_PAGE; render(); break;
     case "phEdit": OV.edit = true; OV.confirm = false; renderPhoto(); { const c = $("#ph-cap"); if(c) c.focus(); } break;
     case "phEditNo": OV.edit = false; renderPhoto(); break;
     case "phDel": OV.confirm = true; OV.edit = false; renderPhoto(); break;
@@ -3532,7 +3573,7 @@ $("#q").addEventListener("input", ev => { clearTimeout(qT); qT = setTimeout(() =
 document.addEventListener("input", ev => {
   const t = ev.target;
   if(t.id === "st-q" && OV && OV.kind === "stsearch") onStockSearchInput(t.value);
-  if(t.id === "phQ"){ S.phQ = t.value; setH("phBody", phBodyHtml()); hydrateImages(); }
+  if(t.id === "phQ"){ S.phQ = t.value; S.phLimit = PH_PAGE; setH("phBody", phBodyHtml()); bindPhotoMore(); hydrateImages(); }
   if(t.id === "bcAmt"){ BT.conv.amt = t.value; btPaintConvert(); }
   if(t.id === "bcPrem"){ BT.conv.prem = t.value; btPaintConvert(); }
   if(t.id === "dv-amt" && OV && OV.kind === "divform"){ OV.d.amount = t.value; const h = $("#dvKrwHint"); if(h) h.textContent = dvKrwHint(); }
@@ -3600,6 +3641,8 @@ async function startApp(user){
   if(qs.has("new")){ qs.delete("new"); history.replaceState(null, "", location.pathname + (qs.toString() ? "?" + qs : "")); openEditor(null); }
   pull();
 }
+(() => { const top = document.querySelector(".top"); if(!top || !window.ResizeObserver) return;
+  new ResizeObserver(() => document.documentElement.style.setProperty("--top-h", top.offsetHeight + "px")).observe(top); })();
 window.__sansiya = { S, pull, flush };
 boot();
 })();

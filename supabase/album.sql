@@ -48,3 +48,6 @@ create policy "bookmarks: own rows" on public.bookmarks
   for all to authenticated
   using (user_id = (select auth.uid()))
   with check (user_id = (select auth.uid()));
+
+-- 사진 주제 (여행·음식·디자인·건축·조경·인테리어). 한 사진에 여러 개를 붙일 수 있어요.
+alter table public.photos add column if not exists topics text[] not null default '{}';
