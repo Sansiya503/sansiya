@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.12.4";
+const APP_VERSION = "1.12.5";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -3511,6 +3511,31 @@ document.addEventListener("click", ev => {
   }
 });
 $("#newBtn").addEventListener("click", () => openEditor(null));
+/* 새 기록 옆 시계 — 서울 시간(UTC+9, 서머타임 없음) 기준, 분이 바뀔 때마다 갱신 */
+const KST_DAYS = ["일", "월", "화", "수", "목", "금", "토"];
+let clockTimer = 0;
+function kstParts(ms = Date.now()){
+  const k = new Date(ms + 9 * 3600e3), p2 = n => String(n).padStart(2, "0");
+  const h24 = k.getUTCHours(), h12 = h24 % 12 || 12;
+  return {
+    time: `${p2(h12)}:${p2(k.getUTCMinutes())} ${h24 < 12 ? "a.m" : "p.m"}`,
+    date: `${k.getUTCFullYear()}-${p2(k.getUTCMonth() + 1)}-${p2(k.getUTCDate())} (${KST_DAYS[k.getUTCDay()]})`,
+    iso: `${k.getUTCFullYear()}-${p2(k.getUTCMonth() + 1)}-${p2(k.getUTCDate())}T${p2(h24)}:${p2(k.getUTCMinutes())}+09:00`
+  };
+}
+function tickClock(){
+  clearTimeout(clockTimer);
+  const el = $("#clock"); if(!el) return;
+  const now = Date.now(), t = kstParts(now);
+  const b = el.firstElementChild, s = el.lastElementChild;
+  if(b.textContent !== t.time) b.textContent = t.time;
+  if(s.textContent !== t.date) s.textContent = t.date;
+  el.dateTime = t.iso;
+  el.setAttribute("aria-label", `서울 ${t.date} ${t.time}`);
+  clockTimer = setTimeout(tickClock, 60000 - (now % 60000) + 50);
+}
+tickClock();
+document.addEventListener("visibilitychange", () => { if(document.visibilityState === "visible") tickClock(); });
 $("#setBtn").addEventListener("click", () => openSettings());
 $("#syncBtn").addEventListener("click", () => { if(S.B && S.B.kind !== "local") pull(); });
 document.addEventListener("keydown", ev => {
