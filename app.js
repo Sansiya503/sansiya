@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.12.5";
+const APP_VERSION = "1.12.6";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -3517,8 +3517,9 @@ let clockTimer = 0;
 function kstParts(ms = Date.now()){
   const k = new Date(ms + 9 * 3600e3), p2 = n => String(n).padStart(2, "0");
   const h24 = k.getUTCHours(), h12 = h24 % 12 || 12;
+  const hm = `${p2(h12)}:${p2(k.getUTCMinutes())}`, ampm = h24 < 12 ? "a.m" : "p.m";
   return {
-    time: `${p2(h12)}:${p2(k.getUTCMinutes())} ${h24 < 12 ? "a.m" : "p.m"}`,
+    hm, ampm, time: `${hm} ${ampm}`,
     date: `${k.getUTCFullYear()}-${p2(k.getUTCMonth() + 1)}-${p2(k.getUTCDate())} (${KST_DAYS[k.getUTCDay()]})`,
     iso: `${k.getUTCFullYear()}-${p2(k.getUTCMonth() + 1)}-${p2(k.getUTCDate())}T${p2(h24)}:${p2(k.getUTCMinutes())}+09:00`
   };
@@ -3528,7 +3529,7 @@ function tickClock(){
   const el = $("#clock"); if(!el) return;
   const now = Date.now(), t = kstParts(now);
   const b = el.firstElementChild, s = el.lastElementChild;
-  if(b.textContent !== t.time) b.textContent = t.time;
+  if(b.textContent !== t.hm + t.ampm) b.innerHTML = `${t.hm}<small class="ampm">${t.ampm}</small>`;
   if(s.textContent !== t.date) s.textContent = t.date;
   el.dateTime = t.iso;
   el.setAttribute("aria-label", `서울 ${t.date} ${t.time}`);
