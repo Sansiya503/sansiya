@@ -5,6 +5,7 @@
 # 저장소 루트를 http://localhost:8768 에서 띄우고, Supabase 라이브러리는 가짜(mock)로 바꿔 끼워서 돌려요.
 # 진짜 Supabase나 실제 계정에는 절대 접속하지 않아요. 스크린샷은 tests/out/shots 에 남아요.
 set -u
+export PYTHONUTF8=1   # Windows에서도 테스트 파일을 UTF-8로 읽게 해요
 cd "$(dirname "$0")/.."
 OUT="$PWD/tests/out"
 mkdir -p "$OUT/shots" "$OUT/imgs"

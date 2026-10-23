@@ -44,7 +44,7 @@ with sync_playwright() as p:
     m = pg.evaluate("""() => { const t = document.querySelector('#tabbar'); const bs = [...t.querySelectorAll('button')];
       return { labels: bs.map(b => b.textContent.trim()), icons: bs.every(b => b.querySelector('.tb-ic svg')), stacked: getComputedStyle(bs[0]).flexDirection, fits: t.scrollWidth <= t.clientWidth + 1,
                iconAbove: bs.every(b => b.querySelector('.tb-ic').getBoundingClientRect().bottom <= b.querySelector('.tb-l').getBoundingClientRect().top + 1) }; }""")
-    ok("six menus with icons, all fit on phone", m["labels"] == ["아카이브", "통계 · 회고", "주식", "비트코인", "사진", "북마크"] and m["icons"] and m["fits"], str(m))
+    ok("seven menus with icons, all fit on phone", m["labels"] == ["아카이브", "통계 · 회고", "주식", "비트코인", "사진", "SNS", "북마크"] and m["icons"] and m["fits"], str(m))
     ok("phone: icon above name", m["stacked"] == "column" and m["iconAbove"], str(m))
     box = pg.locator(".menubar").bounding_box(); pg.screenshot(path=f"{OUT}/shots/al-menu-phone.png", clip={"x":0, "y":box["y"], "width":412, "height":box["height"]})
     go(pg, "photos")

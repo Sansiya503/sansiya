@@ -15,7 +15,7 @@
 - 개인 아카이브 PWA. 빌드 도구 없는 순수 HTML/CSS/JS예요. 파일을 고치면 그대로 배포돼요.
 - 실제 주소: https://sansiya503.github.io/sansiya/ (GitHub Pages, `main` 브랜치 루트를 그대로 서비스)
 - 저장: Supabase(로그인·Postgres·Storage) + 기기 안 IndexedDB 캐시 + 오프라인 대기열(outbox). `?demo`를 붙이면 서버 없이 기기에만 저장하는 모드로 열려요.
-- 메뉴: 아카이브 · 통계 · 회고 · 주식 · 비트코인 · 사진 · 북마크 (`app.js`의 `VIEWS`)
+- 메뉴: 아카이브 · 통계 · 회고 · 주식 · 비트코인 · 사진 · SNS · 북마크 (`app.js`의 `VIEWS`)
 
 | 파일 | 하는 일 |
 |---|---|
@@ -27,11 +27,13 @@
 | `setup.sql`, `supabase/*.sql` | DB 테이블·보안(RLS). 모두 적용 완료 |
 | `supabase/functions/quotes/index.ts` | Edge Function `quotes` (배포 완료) |
 | `toss-sync/` | 사용자 PC(Windows)에서 도는 토스증권 보유 종목 동기화 도구 |
+| `sns/feed.json` | SNS 메뉴에 보이는 X 소식 목록 (앱이 매번 새로 받아요. 공개 저장소라 누구나 볼 수 있어요) |
+| `sns/add.py` | X 글 주소 목록(picks.json)을 받아 `feed.json`에 넣는 도구. 사용법은 파일 맨 위 설명 |
 | `tests/` | 브라우저 자동 테스트 (Playwright) |
 
 ### app.js 지도 (섹션 주석 `/* ---------- 이름 ---------- */` 으로 찾기)
 
-utils → IndexedDB KV → backends(`TABLES`: DB 행 ↔ 앱 객체 변환) → state(`S`) → sync(pull/flush, outbox) → photo URLs → filtering → render: chrome / views(아카이브·통계) → stocks(helpers, quotes, Toss link, market strip, allocation 도넛, main, detail, search/form, dividend) → overlays(편집기·설정 등, 안드로이드 뒤로가기 지원) → gate(설정·로그인) → photo album(`PH_*`, 100장씩 무한 스크롤, 주제 칩) → bookmarks(링크 + 앱 안 즐겨찾기) → bitcoin(`BT_*`, 실시간 시세·블록·환산·김치 프리미엄) → events(클릭/키보드, 헤더 시계 `tickClock`) → service worker → boot.
+utils → IndexedDB KV → backends(`TABLES`: DB 행 ↔ 앱 객체 변환) → state(`S`) → sync(pull/flush, outbox) → photo URLs → filtering → render: chrome / views(아카이브·통계) → stocks(helpers, quotes, Toss link, market strip, allocation 도넛, main, detail, search/form, dividend) → overlays(편집기·설정 등, 안드로이드 뒤로가기 지원) → gate(설정·로그인) → photo album(`PH_*`, 100장씩 무한 스크롤, 주제 칩) → bookmarks(링크 + 앱 안 즐겨찾기) → SNS(`SNS_*`, X처럼 생긴 피드, `sns/feed.json`을 읽어요) → bitcoin(`BT_*`, 실시간 시세·블록·환산·김치 프리미엄) → events(클릭/키보드, 헤더 시계 `tickClock`) → service worker → boot.
 
 - 화면은 `render()`가 문자열 HTML로 다시 그려요. 자주 바뀌는 숫자(비트코인 등)는 제자리 갱신 함수(`btPaintLive` 등)가 따로 있어요.
 - 테이블이 아직 없을 때도 앱이 죽지 않게 `missingTable()`로 넘어가요. 새 테이블을 쓸 때도 같은 방식으로 해 주세요.
@@ -40,8 +42,8 @@ utils → IndexedDB KV → backends(`TABLES`: DB 행 ↔ 앱 객체 변환) → 
 ## 배포 순서 (매번 이대로)
 
 1. 파일을 고쳐요.
-2. **버전 두 곳을 같이 올려요.** `app.js` 8번째 줄 `APP_VERSION`과 `sw.js` 3번째 줄 `VERSION`(`sansiya-v…`). 작은 변경은 마지막 숫자 +1. 지금은 **1.12.6**이에요.
-   - `CLAUDE.md`, `tests/`, `design/`처럼 앱이 읽지 않는 파일만 바꿀 때는 버전을 올리지 않아요.
+2. **버전 두 곳을 같이 올려요.** `app.js` 8번째 줄 `APP_VERSION`과 `sw.js` 3번째 줄 `VERSION`(`sansiya-v…`). 작은 변경은 마지막 숫자 +1. 지금은 **1.13.0**이에요.
+   - `CLAUDE.md`, `tests/`, `design/`, `sns/`처럼 앱 코드가 아닌 파일만 바꿀 때는 버전을 올리지 않아요. (`sns/feed.json`은 서비스 워커가 캐시하지 않아서 올리면 바로 보여요.)
 3. 관련 테스트를 돌려요 (아래 "테스트").
 4. 커밋해요. 메시지는 `vX.Y.Z: 한국어 한 줄 요약`. 작성자는 `Sansiya503 <sansiya503@users.noreply.github.com>`.
 5. `main`에 push하면 1분 안팎으로 GitHub Pages에 올라가요.
@@ -106,8 +108,15 @@ bash tests/run_e2e.sh e2e_menubar e2e_topics   # 일부만
 - 새 로고가 확정되면 앱 전체에 적용해요 →
   `index.html`의 `.brand` 안 svg, `app.js`의 `MARK` 상수, `favicon.svg`, `icon-192.png`, `icon-512.png`, `maskable-512.png`(안전 영역 여백), `apple-touch-icon.png`, 필요하면 `manifest.webmanifest`. 그리고 버전 올려 배포.
 
+**SNS 소식 매일 올리기 — 준비 중 (2026-10-23)**
+
+- 사용자 요청: X에서 매일 5개 이상, 관심 분야(AI, 과학, 기술 발전, 언리얼 엔진, 게임 개발, 게임 그래픽) 소식을 SNS 메뉴에 올려요. 사용자가 팔로우한 AI 인물들 소식도 참고해요. 화면은 X와 최대한 비슷하게 해요.
+- 방법: Claude 앱 브라우저에 로그인된 X에서 글을 고르고 → `picks.json`(주소, topics, 한국어 번역 `ko`, 팔로우 여부)을 만들고 → `python sns/add.py picks.json` → `sns/feed.json`을 커밋·push해요.
+- X 로그인은 사용자가 Claude 앱 브라우저(Ctrl+Shift+B)에서 직접 해요. 매일 자동 실행은 Claude 앱 예약 작업으로 걸 예정이에요(앱이 켜져 있어야 돌아요).
+
 ## 최근 변경
 
+- v1.13.0 SNS 메뉴(사진과 북마크 사이, 검은 원 + 흰 말풍선 아이콘), X 스타일 피드(주제 탭, 번역 보기, 사진 1~4장·동영상·링크 카드·인용 글, 북마크 저장), 폰 메뉴는 이름 길이만큼 폭을 나눠 가져요. 테스트 실행기는 UTF-8로 읽어요(Windows).
 - v1.12.6 헤더 시계의 a.m/p.m을 2/3 크기·파란색(`--ampm`)으로
 - v1.12.5 "+ 새 기록" 오른쪽에 서울 시간 시계 (12시간제, 날짜·요일)
 - v1.12.4 왼쪽 위는 주황 로고 + "산시야"만

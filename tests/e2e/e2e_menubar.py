@@ -19,7 +19,7 @@ with sync_playwright() as p:
         ok(f"{t} line spans full width", abs(g["mbW"] - g["vw"]) < 1)
         ok(f"{t} menu lines up with logo", abs(g["tabLeft"] - g["brandLeft"]) < 2, f'{g["tabLeft"]} vs {g["brandLeft"]}')
         tabs = pg.eval_on_selector_all("#tabbar button", "els => els.map(e => e.textContent)")
-        ok(f"{t} menus", tabs == ["아카이브", "통계 · 회고", "주식", "비트코인", "사진", "북마크"], str(tabs))
+        ok(f"{t} menus", tabs == ["아카이브", "통계 · 회고", "주식", "비트코인", "사진", "SNS", "북마크"], str(tabs))
         pg.screenshot(path=f"{SP}/shots/menubar-{w}-{scheme}.png", clip={"x": 0, "y": 0, "width": w, "height": 260})
         for v in ["stats", "stocks", "archive"]:
             pg.locator(f"#tabbar [data-view={v}]").click(); pg.wait_for_timeout(250)

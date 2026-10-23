@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.12.6";
+const APP_VERSION = "1.13.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -313,10 +313,10 @@ const S = {
   stocks:[], divs:[], quotes:{}, fx:null, quotesAt:0, qLoading:false, qErr:"",
   stockTab:"hold", divYear:new Date().getFullYear(), hist:{}, market:{}, broker:undefined, showHidden:false,
   holdSort:"value", holdShow:"value", hideAmt:false,
-  photos:[], bookmarks:[], albumMissing:false, phBusy:0, phQ:"", phFav:false, phTopic:"all", phLimit:100, bmTab:"links", bmTag:null, bmLoading:new Set()
+  photos:[], bookmarks:[], albumMissing:false, phBusy:0, phQ:"", phFav:false, phTopic:"all", phLimit:100, bmTab:"links", bmTag:null, bmLoading:new Set(), snsTopic:"all"
 };
-try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; if(p.bmTab === "favs") S.bmTab = "favs"; if(p.phTopic) S.phTopic = p.phTopic; }catch(e){}
-function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort, holdSort:S.holdSort, holdShow:S.holdShow, hideAmt:S.hideAmt, bmTab:S.bmTab, phTopic:S.phTopic })); }catch(e){} }
+try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; if(p.bmTab === "favs") S.bmTab = "favs"; if(p.phTopic) S.phTopic = p.phTopic; if(p.snsTopic) S.snsTopic = p.snsTopic; }catch(e){}
+function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort, holdSort:S.holdSort, holdShow:S.holdShow, hideAmt:S.hideAmt, bmTab:S.bmTab, phTopic:S.phTopic, snsTopic:S.snsTopic })); }catch(e){} }
 const k = name => `u:${S.uid}:${name}`;
 const saveCache = () => KV.set(k("entries"), S.entries);
 const saveOutbox = () => KV.set(k("outbox"), S.outbox);
@@ -484,13 +484,14 @@ const pendingIds = () => new Set(S.outbox.filter(o => o.op === "upsert").map(o =
 /* ---------- render: chrome ---------- */
 // the calendar view (calendarHtml) is kept in the code but hidden from the menu for now;
 // put ["calendar","캘린더"] back here to bring it back
-const VIEWS = [["archive","아카이브"],["stats","통계 · 회고"],["stocks","주식"],["bitcoin","비트코인"],["photos","사진"],["bookmarks","북마크"]];
+const VIEWS = [["archive","아카이브"],["stats","통계 · 회고"],["stocks","주식"],["bitcoin","비트코인"],["photos","사진"],["sns","SNS"],["bookmarks","북마크"]];
 // round badge icons for the top menu, in the same style as the bitcoin coin (colour disc + white mark)
 const VIEW_ICONS = {
   archive:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#3D7BFA"/><g fill="#fff"><rect x="15" y="16.5" width="34" height="9.5" rx="3"/><path d="M18 28.5h28v14.5a4.5 4.5 0 0 1-4.5 4.5h-19A4.5 4.5 0 0 1 18 43z"/></g><rect x="26" y="32.5" width="12" height="4" rx="2" fill="#3D7BFA"/></svg>`,
   stats:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#8A63F2"/><g fill="#fff"><rect x="16" y="33" width="8.5" height="14" rx="2.5"/><rect x="27.75" y="24" width="8.5" height="23" rx="2.5"/><rect x="39.5" y="16" width="8.5" height="31" rx="2.5"/></g></svg>`,
   stocks:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#F04452"/><g fill="none" stroke="#fff" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 43.5 26.5 32l7.5 7.5L47.5 26"/><path d="M38 24.5h10.5V35"/></g></svg>`,
   photos:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#20B46B"/><rect x="15" y="18" width="34" height="28" rx="5" fill="#fff"/><path d="M19 42l8.5-10 6 7 4-4.5L45 42z" fill="#20B46B"/><circle cx="40.5" cy="26" r="3.6" fill="#20B46B"/></svg>`,
+  sns:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="31.25" fill="#0F1419" stroke="#5B6670" stroke-width="1.5"/><path d="M23 17.5h18a8 8 0 0 1 8 8v8a8 8 0 0 1-8 8H30l-8.5 6.5 1.8-6.6A8 8 0 0 1 15 33.5v-8a8 8 0 0 1 8-8z" fill="#fff"/><g fill="#0F1419"><circle cx="24.5" cy="29.5" r="2.7"/><circle cx="32" cy="29.5" r="2.7"/><circle cx="39.5" cy="29.5" r="2.7"/></g></svg>`,
   bookmarks:`<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#E5468E"/><path d="M22 15.5h20a3 3 0 0 1 3 3V49l-13-8.5L19 49V18.5a3 3 0 0 1 3-3z" fill="#fff"/></svg>`
 };
 const viewIcon = v => VIEW_ICONS[v] || (v === "bitcoin" ? BT_COIN : "");
@@ -518,6 +519,7 @@ function render(){
     else m.innerHTML = photosHtml();
     bindPhotoMore();
   }
+  else if(S.view === "sns"){ m.innerHTML = snsHtml(); bindSnsMore(); snsLoad(); }
   else if(S.view === "bookmarks"){ m.innerHTML = bookmarksHtml(); if(S.bmTab === "favs" && favItems().stocks.length) refreshQuotes(); }
   else m.innerHTML = statsHtml();
   if(S.view === "bitcoin") btStart(); else btStop();
@@ -2714,6 +2716,183 @@ document.addEventListener("drop", ev => {
   ev.preventDefault(); uploadAlbum(ev.dataTransfer.files);
 });
 
+/* ---------- SNS: X-style feed of daily picks (sns/feed.json, filled by sns/add.py) ---------- */
+const SNS_TOPICS = [["all","전체"],["ai","AI"],["science","과학"],["tech","기술"],["unreal","언리얼 엔진"],["gamedev","게임 개발"],["graphics","게임 그래픽"]];
+const SNS_TOPIC_KEYS = SNS_TOPICS.slice(1).map(t => t[0]);
+const SNS_PAGE = 30;
+const SNS_LANG = { en:"영어", ja:"일본어", zh:"중국어", fr:"프랑스어", de:"독일어", es:"스페인어" };
+const SNS = { posts:null, updatedAt:null, at:0, busy:false, err:false, limit:SNS_PAGE, ko:new Set() };
+const snsTopicName = k => (SNS_TOPICS.find(t => t[0] === k) || [k, k])[1];
+const snsTopic = () => SNS_TOPIC_KEYS.includes(S.snsTopic) ? S.snsTopic : "all";
+const snsList = () => { const tp = snsTopic(); return (SNS.posts || []).filter(p => tp === "all" || (p.topics || []).includes(tp)); };
+const snsNum = n => !(n > 0) ? "" : n < 1e4 ? n.toLocaleString("ko-KR") : n < 1e8 ? +(n / 1e4).toFixed(n < 1e5 ? 1 : 0) + "만" : +(n / 1e8).toFixed(1) + "억";
+const snsHref = h => /^https?:\/\//i.test(String(h || ""));
+const snsRich = r => (r || []).map(x => Array.isArray(x) ? (snsHref(x[1]) ? `<a href="${esc(x[1])}" target="_blank" rel="noopener noreferrer">${esc(x[0])}</a>` : esc(x[0])) : esc(x)).join("").replace(/\n/g, "<br>");
+const snsPlain = r => (r || []).map(x => Array.isArray(x) ? x[0] : x).join("");
+const snsImg = (src, size) => snsHref(src) ? esc(/pbs\.twimg\.com\/media\//.test(src) && !src.includes("?") ? src + "?name=" + size : src) : "";
+function snsAgo(iso){
+  const t = Date.parse(iso || ""); if(!t) return "";
+  const s = (Date.now() - t) / 1000;
+  if(s < 60) return "방금";
+  if(s < 3600) return Math.floor(s / 60) + "분";
+  if(s < 86400) return Math.floor(s / 3600) + "시간";
+  const d = new Date(t + 9 * 3600e3), y = new Date(Date.now() + 9 * 3600e3).getUTCFullYear();
+  return `${d.getUTCFullYear() === y ? "" : d.getUTCFullYear() + "년 "}${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일`;
+}
+function snsDay(day){
+  const k = new Date(Date.now() + 9 * 3600e3), p2 = n => String(n).padStart(2, "0");
+  const today = `${k.getUTCFullYear()}-${p2(k.getUTCMonth() + 1)}-${p2(k.getUTCDate())}`;
+  const [y, m, d] = String(day || "").split("-").map(Number); if(!d) return "";
+  return `${day === today ? "오늘 · " : ""}${m}월 ${d}일 (${WD[new Date(y, m - 1, d).getDay()]})`;
+}
+async function snsLoad(force){
+  if(SNS.busy || (!force && Date.now() - SNS.at < 10 * 60e3)) return;
+  SNS.busy = true; SNS.at = Date.now();
+  try{
+    if(!SNS.posts){ const c = await KV.get("sns-feed"); if(c && Array.isArray(c.posts)){ SNS.posts = c.posts; SNS.updatedAt = c.updatedAt || null; if(S.view === "sns") render(); } }
+    const r = await fetch("sns/feed.json", { cache:"no-cache" });
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    SNS.posts = Array.isArray(j.posts) ? j.posts : []; SNS.updatedAt = j.updatedAt || null; SNS.err = false;
+    KV.set("sns-feed", { posts:SNS.posts, updatedAt:SNS.updatedAt });
+  }catch(e){ SNS.err = true; }
+  finally{ SNS.busy = false; if(S.view === "sns") render(); }
+}
+const SNS_BADGE = c => c ? `<svg class="xp-badge ${esc(c)}" viewBox="0 0 22 22" role="img" aria-label="인증된 계정"><circle cx="11" cy="11" r="10"/><path d="m6.6 11.2 3.1 3.1 5.8-6.4" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg>` : "";
+const SNS_IC = {
+  reply:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 4.5h5a6.5 6.5 0 0 1 0 13H12l-4.5 3.2v-3.6A6.5 6.5 0 0 1 9.5 4.5z"/></svg>`,
+  repost:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9 7.5 6l3 3M7.5 6.5V15a2.5 2.5 0 0 0 2.5 2.5h4M19.5 15l-3 3-3-3M16.5 17.5V9A2.5 2.5 0 0 0 14 6.5h-4"/></svg>`,
+  like:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.5-4.4-7.5-10A4.3 4.3 0 0 1 12 7.4 4.3 4.3 0 0 1 19.5 10c0 5.6-7.5 10-7.5 10z"/></svg>`,
+  mark:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a1 1 0 0 1 1 1v14.2l-6-4.2-6 4.2V5.5a1 1 0 0 1 1-1z"/></svg>`,
+  share:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4.5M7.5 8.5 12 4l4.5 4.5M5 13.5v4A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5v-4"/></svg>`,
+  open:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4.5h5.5V10M19.5 4.5 11 13M17.5 14v3.5a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2H10"/></svg>`,
+  ctx:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l1.9 5 5.1.4-3.9 3.3 1.2 5.1L12 14.6l-4.3 2.7 1.2-5.1L5 8.9l5.1-.4z"/></svg>`
+};
+const snsSaved = p => S.bookmarks.find(b => b.kind === "link" && b.url === p.url);
+function snsMediaHtml(ms, url, small){
+  ms = (ms || []).filter(m => m && snsHref(m.src)).slice(0, 4); if(!ms.length) return "";
+  const n = ms.length, one = n === 1 ? ms[0] : null;
+  const ratio = one && one.w > 0 && one.h > 0 ? Math.min(Math.max(one.w / one.h, 0.8), 2.4) : 16 / 9;
+  const item = (m, i) => {
+    if(m.type === "video" || m.type === "gif"){
+      if(!small && snsHref(m.mp4)) return `<div class="xp-m">${m.type === "gif"
+        ? `<video src="${esc(m.mp4)}" poster="${snsImg(m.src, "small")}" autoplay muted loop playsinline preload="none"></video><i class="xp-gif">GIF</i>`
+        : `<video src="${esc(m.mp4)}" poster="${snsImg(m.src, "small")}" controls playsinline preload="none"></video>`}</div>`;
+      return `<a class="xp-m" href="${esc(url)}" target="_blank" rel="noopener noreferrer"><img src="${snsImg(m.src, "small")}" alt="동영상" loading="lazy" referrerpolicy="no-referrer"><i class="xp-play" aria-hidden="true"></i></a>`;
+    }
+    return `<a class="xp-m" href="${esc(url)}/photo/${i + 1}" target="_blank" rel="noopener noreferrer"><img src="${snsImg(m.src, small || n > 1 ? "small" : "medium")}" alt="사진" loading="lazy" referrerpolicy="no-referrer"></a>`;
+  };
+  return `<div class="xp-media n${n}${small ? " sm" : ""}"${one && !small ? ` style="aspect-ratio:${ratio.toFixed(3)}"` : ""}>${ms.map(item).join("")}</div>`;
+}
+function snsHeadHtml(a, url, at, small){
+  const prof = "https://x.com/" + encodeURIComponent(a.handle || "");
+  const name = `<b>${esc(a.name || a.handle || "")}</b>${SNS_BADGE(a.badge)}`;
+  return `<div class="xp-head">
+    ${small ? `<span class="xp-ava sm${a.square ? " sq" : ""}">${snsHref(a.avatar) ? `<img src="${esc(a.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}</span><span class="xp-name">${name}</span>`
+      : `<a class="xp-name" href="${prof}" target="_blank" rel="noopener noreferrer">${name}</a>`}
+    <span class="xp-meta"><span class="xp-handle">@${esc(a.handle || "")}</span><span aria-hidden="true">·</span>${small ? `<time datetime="${esc(at || "")}">${esc(snsAgo(at))}</time>` : `<a class="xp-time" href="${esc(url)}" target="_blank" rel="noopener noreferrer"><time datetime="${esc(at || "")}">${esc(snsAgo(at))}</time></a>`}</span>
+  </div>`;
+}
+function snsPostHtml(p){
+  const a = p.author || {}, url = snsHref(p.url) ? p.url : "https://x.com/i/status/" + encodeURIComponent(p.id);
+  const prof = "https://x.com/" + encodeURIComponent(a.handle || "");
+  const ctx = [...(p.topics || []).map(snsTopicName), p.following ? "팔로우 중" : ""].filter(Boolean).join(" · ");
+  const tr = p.ko && p.lang !== "ko" ? (SNS.ko.has(p.id)
+    ? `<div class="xp-ko"><small>${esc(SNS_LANG[p.lang] || "다른 언어")}에서 번역함 · <button type="button" data-snstr="${esc(p.id)}">원문만 보기</button></small><p>${esc(p.ko)}</p></div>`
+    : `<button type="button" class="xp-tr" data-snstr="${esc(p.id)}">게시물 번역하기</button>`) : "";
+  const c = p.card && snsHref(p.card.href) && p.card.title ? p.card : null;
+  const q = p.quote && p.quote.author && snsHref(p.quote.url) ? p.quote : null;
+  const saved = !!snsSaved(p);
+  return `<article class="xp" data-xp="${esc(p.id)}">
+    ${ctx ? `<div class="xp-ctx">${SNS_IC.ctx}<span>${esc(ctx)}</span></div>` : ""}
+    <div class="xp-row">
+      <a class="xp-ava${a.square ? " sq" : ""}" href="${prof}" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true">${snsHref(a.avatar) ? `<img src="${esc(a.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}</a>
+      <div class="xp-main">
+        <div class="xp-top">${snsHeadHtml(a, url, p.createdAt)}<a class="xp-open" href="${esc(url)}" target="_blank" rel="noopener noreferrer" aria-label="X에서 열기" title="X에서 열기">${SNS_IC.open}</a></div>
+        ${(p.rich || []).length ? `<div class="xp-text"${p.lang && /^[a-z]{2,3}$/.test(p.lang) ? ` lang="${esc(p.lang)}"` : ""}>${snsRich(p.rich)}</div>` : ""}
+        ${tr}
+        ${snsMediaHtml(p.media, url)}
+        ${c ? `<a class="xp-card${c.large && snsHref(c.img) ? " lg" : ""}" href="${esc(c.href)}" target="_blank" rel="noopener noreferrer">${snsHref(c.img) ? `<span class="xp-card-im"><img src="${esc(c.img)}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>` : ""}<span class="xp-card-tx">${c.domain ? `<small>${esc(c.domain)}</small>` : ""}<b>${esc(c.title)}</b></span></a>` : ""}
+        ${q ? `<a class="xp-quote" href="${esc(q.url)}" target="_blank" rel="noopener noreferrer">${snsHeadHtml(q.author, q.url, q.createdAt, true)}${(q.rich || []).length ? `<div class="xp-text">${esc(snsPlain(q.rich))}</div>` : ""}${snsMediaHtml(q.media, q.url, true)}</a>` : ""}
+        <div class="xp-acts">
+          <a class="xp-act rp" href="${esc(url)}" target="_blank" rel="noopener noreferrer" aria-label="답글 ${p.replies || 0}개">${SNS_IC.reply}<span>${snsNum(p.replies)}</span></a>
+          <a class="xp-act rt" href="https://x.com/intent/retweet?tweet_id=${encodeURIComponent(p.id)}" target="_blank" rel="noopener noreferrer" aria-label="재게시">${SNS_IC.repost}<span></span></a>
+          <a class="xp-act lk" href="https://x.com/intent/like?tweet_id=${encodeURIComponent(p.id)}" target="_blank" rel="noopener noreferrer" aria-label="마음에 들어요 ${p.likes || 0}개">${SNS_IC.like}<span>${snsNum(p.likes)}</span></a>
+          <span class="xp-sp"></span>
+          <button type="button" class="xp-act bm" data-snsbm="${esc(p.id)}" aria-pressed="${saved}" aria-label="${saved ? "북마크에서 빼기" : "북마크에 저장"}" title="${saved ? "북마크에서 빼기" : "북마크에 저장"}">${SNS_IC.mark}</button>
+          <button type="button" class="xp-act sh" data-snsshare="${esc(p.id)}" aria-label="공유" title="링크 공유">${SNS_IC.share}</button>
+        </div>
+      </div>
+    </div>
+  </article>`;
+}
+function snsRowsHtml(list, from, to){
+  let out = "";
+  for(let i = from; i < to; i++){
+    const p = list[i];
+    if(p.addedOn && (i === 0 || list[i - 1].addedOn !== p.addedOn)){
+      const n = list.filter(x => x.addedOn === p.addedOn).length;
+      out += `<div class="xf-day"><span>${esc(snsDay(p.addedOn))}</span><small>소식 ${n}개</small></div>`;
+    }
+    out += snsPostHtml(p);
+  }
+  return out;
+}
+function snsHtml(){
+  const list = snsList(), tp = snsTopic(), to = Math.min(list.length, SNS.limit);
+  const up = SNS.updatedAt ? new Date(SNS.updatedAt) : null;
+  const sub = up && !isNaN(up) ? `${up.getMonth() + 1}월 ${up.getDate()}일 ${String(up.getHours()).padStart(2, "0")}:${String(up.getMinutes()).padStart(2, "0")} 업데이트` : "";
+  let body;
+  if(SNS.posts === null) body = SNS.err
+    ? `<div class="xf-empty"><h3>소식을 불러오지 못했어요</h3><p>인터넷 연결을 확인하고 다시 시도해 주세요.</p><button type="button" class="xf-btn" data-snsretry="1">다시 시도</button></div>`
+    : `<div class="xf-loading" aria-label="불러오는 중"><i></i></div>`;
+  else if(!list.length) body = `<div class="xf-empty"><h3>${tp === "all" ? "아직 모은 소식이 없어요" : `${esc(snsTopicName(tp))} 소식이 아직 없어요`}</h3><p>매일 X에서 AI·과학·기술·언리얼 엔진·게임 개발·게임 그래픽 소식을 골라 여기에 올려요.</p></div>`;
+  else body = snsRowsHtml(list, 0, to);
+  return `<div class="xf">
+    <div class="xf-head">
+      <div class="xf-title"><h2>SNS</h2>${sub ? `<small>${esc(sub)}</small>` : ""}</div>
+      <nav class="xf-tabs" role="tablist" aria-label="SNS 주제">${SNS_TOPICS.map(([k, l]) => `<button type="button" role="tab" data-snstopic="${k}" aria-selected="${tp === k}"><span>${l}</span></button>`).join("")}</nav>
+    </div>
+    <div class="xf-list" id="snsList">${body}</div>
+    ${to < list.length ? `<div class="xf-more" id="snsMore"><button type="button" class="xf-btn" data-snsmore="1">더 보기</button></div>` : ""}
+  </div>`;
+}
+let snsIO = null;
+function snsMore(){
+  const list = snsList(), box = document.getElementById("snsList"), more = document.getElementById("snsMore"); if(!box) return;
+  const from = Math.min(SNS.limit, list.length), to = Math.min(list.length, from + SNS_PAGE);
+  SNS.limit = to; box.insertAdjacentHTML("beforeend", snsRowsHtml(list, from, to));
+  if(to >= list.length && more){ more.remove(); if(snsIO){ snsIO.disconnect(); snsIO = null; } }
+}
+function bindSnsMore(){
+  if(snsIO){ snsIO.disconnect(); snsIO = null; }
+  const more = document.getElementById("snsMore"); if(!more || !("IntersectionObserver" in window)) return;
+  snsIO = new IntersectionObserver(ents => { if(ents.some(e => e.isIntersecting)) snsMore(); }, { rootMargin:"600px 0px" });
+  snsIO.observe(more);
+}
+function snsRepaint(id){
+  const p = (SNS.posts || []).find(x => x.id === id), el = p && document.querySelector(`.xp[data-xp="${CSS.escape(id)}"]`);
+  if(el) el.outerHTML = snsPostHtml(p);
+}
+function snsToggleBookmark(id){
+  const p = (SNS.posts || []).find(x => x.id === id); if(!p) return;
+  const b = snsSaved(p);
+  if(b){ dropBookmark(b.id); toast("북마크에서 뺐어요."); }
+  else {
+    const a = p.author || {}, text = snsPlain(p.rich).replace(/\s+/g, " ").trim(), now = Date.now();
+    putBookmark({ id:uuid(), kind:"link", ref:"", url:p.url, title:`${a.name || a.handle}: ${text.slice(0, 80)}${text.length > 80 ? "…" : ""}`, memo:p.ko || "", tags:["SNS"], createdAt:now, updatedAt:now });
+    toast("북마크에 저장했어요.");
+  }
+  snsRepaint(id);
+}
+async function snsShare(id){
+  const p = (SNS.posts || []).find(x => x.id === id); if(!p) return;
+  try{
+    if(navigator.share){ await navigator.share({ url:p.url }); return; }
+    await navigator.clipboard.writeText(p.url); toast("링크를 복사했어요.");
+  }catch(e){ if(!(e && e.name === "AbortError")) toast("링크를 복사하지 못했어요."); }
+}
+
 /* ---------- bitcoin ---------- */
 // Live prices come straight from the exchanges' public websockets (KRW: Upbit or Bithumb, USD: Binance)
 // with REST polling as a fallback. Dominance: CoinGecko, Fear & Greed: Alternative.me, charts: Binance
@@ -3396,6 +3575,13 @@ document.addEventListener("click", ev => {
   if(ds.photo){ openPhoto(ds.photo); return; }
   if(ds.phnav){ phNav(+ds.phnav); return; }
   if(ds.phtopic){ phSetTopic(ds.phtopic); return; }
+  // SNS
+  if(ds.snstopic){ S.snsTopic = ds.snstopic; SNS.limit = SNS_PAGE; savePrefs(); render(); const h = document.querySelector(".xf-head"); if(h && h.getBoundingClientRect().top <= (parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--top-h")) || 0) + 1) window.scrollTo({ top:0 }); return; }
+  if(ds.snstr){ const id = ds.snstr; if(SNS.ko.has(id)) SNS.ko.delete(id); else SNS.ko.add(id); snsRepaint(id); return; }
+  if(ds.snsbm){ snsToggleBookmark(ds.snsbm); return; }
+  if(ds.snsshare){ snsShare(ds.snsshare); return; }
+  if(ds.snsmore){ snsMore(); return; }
+  if(ds.snsretry){ snsLoad(true); render(); return; }
   if(ds.pvtopic){ t.setAttribute("aria-pressed", String(t.getAttribute("aria-pressed") !== "true")); return; }
   if(ds.phgo){ const k = ds.phgo; closeOv(); if(S.view !== "photos"){ S.view = "photos"; } S.phQ = ""; S.phFav = false; S.phTopic = k; S.phLimit = PH_PAGE; savePrefs(); render(); window.scrollTo({ top:0 }); return; }
   if(ds.bmtab){ S.bmTab = ds.bmtab; savePrefs(); render(); return; }
