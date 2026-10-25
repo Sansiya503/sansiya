@@ -23,6 +23,7 @@ for i in range(40):
          "addedOn": day.isoformat(), "following": i % 2 == 0}
     if i % 3 == 0: p["ko"] = f"게시물 {i}: 새 언리얼 엔진 5 나나이트 데모"
     if i == 0: p["more"] = True
+    if i == 2: p["topics"] = ["arch"]
     if k.startswith("photo"): p["media"] = [{"type": "photo", "src": IMG(j), "w": 1200, "h": 800 if i != 1 else 2400} for j in range(int(k[-1]))]
     if k == "video": p["media"] = [{"type": "video", "src": IMG(9), "w": 1920, "h": 1080, "mp4": "https://video.twimg.com/v.mp4"}]
     if k == "card": p["card"] = {"title": "Introducing a new model for real-time global illumination", "domain": "research.example.com", "img": IMG(5), "href": "https://research.example.com/gi", "large": i % 16 == 6}
@@ -52,7 +53,7 @@ with sync_playwright() as pw:
         n = pg.locator(".xp").count()
         ok(f"{t} first page shows 30 posts", n == 30, str(n))
         topics = pg.eval_on_selector_all(".xf-tabs button", "els => els.map(e => e.textContent)")
-        ok(f"{t} topic tabs", topics == ["전체", "AI", "과학", "기술", "언리얼 엔진", "게임 개발", "게임 그래픽"], str(topics))
+        ok(f"{t} topic tabs", topics == ["전체", "AI", "과학", "기술", "언리얼 엔진", "게임 개발", "게임 그래픽", "건축"], str(topics))
         ok(f"{t} header search hidden", not pg.is_visible(".top .search"))
         day0 = pg.text_content(".xf-day") or ""
         ok(f"{t} today's divider with count", day0.startswith("오늘 · ") and "소식 7개" in day0, day0)
@@ -101,6 +102,10 @@ with sync_playwright() as pw:
         ctx = pg.eval_on_selector_all(".xp .xp-ctx span", "els => els.map(e => e.textContent)")
         ok(f"{t} topic filter", len(ctx) == 10 and all("언리얼 엔진" in x for x in ctx) and pg.get_attribute("[data-snstopic=unreal]", "aria-selected") == "true", str(len(ctx)))
         ok(f"{t} filter resets scroll to top", pg.evaluate("window.scrollY") < 5)
+        pg.click("[data-snstopic=arch]"); pg.wait_for_timeout(150)
+        ok(f"{t} 건축 filter", pg.locator(".xp").count() == 1 and pg.text_content(".xp .xp-ctx span").startswith("건축"), str(pg.locator(".xp").count()))
+        tabs_fit = pg.evaluate("(() => { const t = document.querySelector('.xf-tabs'); return [t.scrollWidth, t.clientWidth]; })()")
+        if not mob: ok(f"{t} all 8 topic tabs fit across the column", tabs_fit[0] <= tabs_fit[1] + 1, str(tabs_fit))
         pg.click("[data-snstopic=science]"); pg.wait_for_timeout(100)
         # bookmark into the app's 북마크
         pg.locator(".xp").first.locator(".xp-act.bm").click(); pg.wait_for_timeout(150)

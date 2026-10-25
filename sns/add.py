@@ -7,7 +7,7 @@
 picks.json 은 이렇게 생긴 목록이에요 (url 대신 id 도 돼요):
     [{"url": "https://x.com/karpathy/status/123…", "topics": ["ai"], "ko": "한국어 번역", "following": true}]
 
-topics: ai · science · tech · unreal · gamedev · graphics
+topics: ai · science · tech · unreal · gamedev · graphics · arch(건축·조경·인테리어·도시계획·도시설계·공간디자인)
 글 내용은 X의 공개 임베드용 주소(cdn.syndication.twimg.com)에서 받아요. 로그인·키가 필요 없어요.
 """
 import datetime as dt
@@ -21,7 +21,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FEED = os.path.join(HERE, "feed.json")
-TOPICS = {"ai", "science", "tech", "unreal", "gamedev", "graphics"}
+TOPICS = {"ai", "science", "tech", "unreal", "gamedev", "graphics", "arch"}
 MAX_POSTS = 600
 KST = dt.timezone(dt.timedelta(hours=9))
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36"

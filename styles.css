@@ -911,7 +911,7 @@ body[data-view="sns"] .top .search{display:none}
 .xf-title small{color:var(--x-sub);font-size:13px}
 .xf-tabs{display:flex;overflow-x:auto;scrollbar-width:none}
 .xf-tabs::-webkit-scrollbar{display:none}
-.xf-tabs button{flex:1 0 auto;border:0;background:transparent;height:50px;padding:0 16px;color:var(--x-sub);font-size:15px;font-weight:500}
+.xf-tabs button{flex:1 0 auto;border:0;background:transparent;height:50px;padding:0 13px;color:var(--x-sub);font-size:15px;font-weight:500}
 .xf-tabs button:hover{background:var(--x-hover);color:var(--x-text)}
 .xf-tabs button span{position:relative;display:inline-flex;align-items:center;height:100%}
 .xf-tabs button[aria-selected="true"]{color:var(--x-text);font-weight:700}

@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.13.1";
+const APP_VERSION = "1.13.2";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -2717,7 +2717,7 @@ document.addEventListener("drop", ev => {
 });
 
 /* ---------- SNS: X-style feed of daily picks (sns/feed.json, filled by sns/add.py) ---------- */
-const SNS_TOPICS = [["all","전체"],["ai","AI"],["science","과학"],["tech","기술"],["unreal","언리얼 엔진"],["gamedev","게임 개발"],["graphics","게임 그래픽"]];
+const SNS_TOPICS = [["all","전체"],["ai","AI"],["science","과학"],["tech","기술"],["unreal","언리얼 엔진"],["gamedev","게임 개발"],["graphics","게임 그래픽"],["arch","건축"]];
 const SNS_TOPIC_KEYS = SNS_TOPICS.slice(1).map(t => t[0]);
 const SNS_PAGE = 30;
 const SNS_LANG = { en:"영어", ja:"일본어", zh:"중국어", fr:"프랑스어", de:"독일어", es:"스페인어" };
@@ -2849,7 +2849,7 @@ function snsHtml(){
   if(SNS.posts === null) body = SNS.err
     ? `<div class="xf-empty"><h3>소식을 불러오지 못했어요</h3><p>인터넷 연결을 확인하고 다시 시도해 주세요.</p><button type="button" class="xf-btn" data-snsretry="1">다시 시도</button></div>`
     : `<div class="xf-loading" aria-label="불러오는 중"><i></i></div>`;
-  else if(!list.length) body = `<div class="xf-empty"><h3>${tp === "all" ? "아직 모은 소식이 없어요" : `${esc(snsTopicName(tp))} 소식이 아직 없어요`}</h3><p>매일 X에서 AI·과학·기술·언리얼 엔진·게임 개발·게임 그래픽 소식을 골라 여기에 올려요.</p></div>`;
+  else if(!list.length) body = `<div class="xf-empty"><h3>${tp === "all" ? "아직 모은 소식이 없어요" : `${esc(snsTopicName(tp))} 소식이 아직 없어요`}</h3><p>매일 X에서 AI·과학·기술·언리얼 엔진·게임 개발·게임 그래픽·건축 소식을 골라 여기에 올려요.</p></div>`;
   else body = snsRowsHtml(list, 0, to);
   return `<div class="xf">
     <div class="xf-head">
