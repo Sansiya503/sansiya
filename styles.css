@@ -955,6 +955,8 @@ a.xp-name:hover b{text-decoration:underline}
 .xp-text{margin-top:2px;white-space:normal;overflow-wrap:anywhere}
 .xf .xp-text a{color:var(--x-blue)}
 .xp-text a:hover{text-decoration:underline}
+.xf .xp-showmore{display:inline-block;margin-top:2px;color:var(--x-blue)}
+.xf .xp-showmore:hover{text-decoration:underline}
 .xp-tr{display:block;border:0;background:transparent;padding:0;margin-top:4px;color:var(--x-blue);font-size:15px}
 .xp-tr:hover{text-decoration:underline}
 .xp-ko{margin-top:6px}

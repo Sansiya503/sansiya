@@ -42,7 +42,7 @@ utils → IndexedDB KV → backends(`TABLES`: DB 행 ↔ 앱 객체 변환) → 
 ## 배포 순서 (매번 이대로)
 
 1. 파일을 고쳐요.
-2. **버전 두 곳을 같이 올려요.** `app.js` 8번째 줄 `APP_VERSION`과 `sw.js` 3번째 줄 `VERSION`(`sansiya-v…`). 작은 변경은 마지막 숫자 +1. 지금은 **1.13.0**이에요.
+2. **버전 두 곳을 같이 올려요.** `app.js` 8번째 줄 `APP_VERSION`과 `sw.js` 3번째 줄 `VERSION`(`sansiya-v…`). 작은 변경은 마지막 숫자 +1. 지금은 **1.13.1**이에요.
    - `CLAUDE.md`, `tests/`, `design/`, `sns/`처럼 앱 코드가 아닌 파일만 바꿀 때는 버전을 올리지 않아요. (`sns/feed.json`은 서비스 워커가 캐시하지 않아서 올리면 바로 보여요.)
 3. 관련 테스트를 돌려요 (아래 "테스트").
 4. 커밋해요. 메시지는 `vX.Y.Z: 한국어 한 줄 요약`. 작성자는 `Sansiya503 <sansiya503@users.noreply.github.com>`.
@@ -111,11 +111,14 @@ bash tests/run_e2e.sh e2e_menubar e2e_topics   # 일부만
 **SNS 소식 매일 올리기 — 준비 중 (2026-10-23)**
 
 - 사용자 요청: X에서 매일 5개 이상, 관심 분야(AI, 과학, 기술 발전, 언리얼 엔진, 게임 개발, 게임 그래픽) 소식을 SNS 메뉴에 올려요. 사용자가 팔로우한 AI 인물들 소식도 참고해요. 화면은 X와 최대한 비슷하게 해요.
-- 방법: Claude 앱 브라우저에 로그인된 X에서 글을 고르고 → `picks.json`(주소, topics, 한국어 번역 `ko`, 팔로우 여부)을 만들고 → `python sns/add.py picks.json` → `sns/feed.json`을 커밋·push해요.
-- X 로그인은 사용자가 Claude 앱 브라우저(Ctrl+Shift+B)에서 직접 해요. 매일 자동 실행은 Claude 앱 예약 작업으로 걸 예정이에요(앱이 켜져 있어야 돌아요).
+- 방법: X에서 글을 고르고 → `picks.json`(주소, topics, 한국어 번역 `ko`, 팔로우 여부)을 만들고 → `python sns/add.py picks.json` → `sns/feed.json`을 커밋·push해요.
+- X는 **사용자 Chrome(Claude in Chrome 확장)**에 로그인돼 있어요. Claude 앱 브라우저에서는 X 로그인이 안 됐어요(Google 로그인이 막힘). 팔로잉 탭 + 주제 검색(`min_faves:300 since:날짜`)으로 고르면 좋아요.
+- X 글 위치(entity indices)는 UTF-16이 아니라 글자(코드 포인트) 기준이에요. 긴 글(note_tweet)은 앞부분만 받아져서 `more: true`로 "더 보기" 링크를 붙여요.
+- 2026-10-25 첫 소식 11개를 올렸어요. 매일 자동 실행(Claude 앱 예약 작업)은 아직이에요.
 
 ## 최근 변경
 
+- v1.13.1 SNS 첫 소식 11개, 긴 글 "더 보기", 인용 글 속 사진이 상자 밖으로 빠지던 문제 수정, 멘션 링크 위치 수정
 - v1.13.0 SNS 메뉴(사진과 북마크 사이, 검은 원 + 흰 말풍선 아이콘), X 스타일 피드(주제 탭, 번역 보기, 사진 1~4장·동영상·링크 카드·인용 글, 북마크 저장), 폰 메뉴는 이름 길이만큼 폭을 나눠 가져요. 테스트 실행기는 UTF-8로 읽어요(Windows).
 - v1.12.6 헤더 시계의 a.m/p.m을 2/3 크기·파란색(`--ampm`)으로
 - v1.12.5 "+ 새 기록" 오른쪽에 서울 시간 시계 (12시간제, 날짜·요일)

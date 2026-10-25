@@ -22,6 +22,7 @@ for i in range(40):
          "media": [], "topics": [["ai"], ["science"], ["tech"], ["unreal"], ["gamedev"], ["graphics"], ["ai", "tech"], ["unreal", "graphics"]][i % 8],
          "addedOn": day.isoformat(), "following": i % 2 == 0}
     if i % 3 == 0: p["ko"] = f"게시물 {i}: 새 언리얼 엔진 5 나나이트 데모"
+    if i == 0: p["more"] = True
     if k.startswith("photo"): p["media"] = [{"type": "photo", "src": IMG(j), "w": 1200, "h": 800 if i != 1 else 2400} for j in range(int(k[-1]))]
     if k == "video": p["media"] = [{"type": "video", "src": IMG(9), "w": 1920, "h": 1080, "mp4": "https://video.twimg.com/v.mp4"}]
     if k == "card": p["card"] = {"title": "Introducing a new model for real-time global illumination", "domain": "research.example.com", "img": IMG(5), "href": "https://research.example.com/gi", "large": i % 16 == 6}
@@ -60,6 +61,7 @@ with sync_playwright() as pw:
         links = first.locator(".xp-text a").evaluate_all("els => els.map(e => [e.textContent, e.href, e.target])")
         ok(f"{t} links and hashtags open X in a new tab", links == [["epicgames.com/unreal…", "https://www.epicgames.com/unreal", "_blank"], ["#UE5", "https://x.com/hashtag/UE5", "_blank"]], str(links))
         ok(f"{t} line breaks kept", first.locator(".xp-text br").count() == 1)
+        ok(f"{t} long post has 더 보기 link to X", first.locator(".xp-showmore").get_attribute("href") == posts[0]["url"] and pg.locator(".xp").nth(1).locator(".xp-showmore").count() == 0)
         ok(f"{t} action row: reply/repost/like + bookmark/share", first.locator(".xp-acts .xp-act").count() == 5)
         likes = pg.eval_on_selector_all(".xp .xp-act.lk span", "els => els.slice(0, 4).map(e => e.textContent)")
         ok(f"{t} counts formatted like X", likes == ["", "999", "1.2만", "340만"], str(likes))
@@ -79,6 +81,7 @@ with sync_playwright() as pw:
         ok(f"{t} video plays inline", pg.locator(".xp").nth(5).locator("video[controls][poster]").count() == 1)
         ok(f"{t} link card", pg.locator(".xp").nth(6).locator(".xp-card b").text_content().startswith("Introducing"))
         ok(f"{t} quoted post", pg.locator(".xp").nth(7).locator(".xp-quote .xp-name b").text_content() == "연구자 99")
+        ok(f"{t} quoted post's picture stays inside the quote box", pg.locator(".xp").nth(7).locator(".xp-quote .xp-media img").count() == 1 and pg.locator(".xp").nth(7).locator(".xp-quote a").count() == 0)
         ok(f"{t} gold badge for business", pg.locator(".xp").nth(6).locator(".xp-badge.gold").count() == 1)
         # long name stays on one line
         r = pg.evaluate("(() => { const a = document.querySelectorAll('.xp')[3]; const h = a.querySelector('.xp-top').getBoundingClientRect(); return [h.height, a.getBoundingClientRect().right, document.documentElement.clientWidth]; })()")

@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.13.0";
+const APP_VERSION = "1.13.1";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -2773,14 +2773,16 @@ function snsMediaHtml(ms, url, small){
   ms = (ms || []).filter(m => m && snsHref(m.src)).slice(0, 4); if(!ms.length) return "";
   const n = ms.length, one = n === 1 ? ms[0] : null;
   const ratio = one && one.w > 0 && one.h > 0 ? Math.min(Math.max(one.w / one.h, 0.8), 2.4) : 16 / 9;
+  // inside a quoted post the whole box is already a link, and links can't nest
+  const tag = small ? "span" : "a", open = href => small ? "" : ` href="${esc(href)}" target="_blank" rel="noopener noreferrer"`;
   const item = (m, i) => {
     if(m.type === "video" || m.type === "gif"){
       if(!small && snsHref(m.mp4)) return `<div class="xp-m">${m.type === "gif"
         ? `<video src="${esc(m.mp4)}" poster="${snsImg(m.src, "small")}" autoplay muted loop playsinline preload="none"></video><i class="xp-gif">GIF</i>`
         : `<video src="${esc(m.mp4)}" poster="${snsImg(m.src, "small")}" controls playsinline preload="none"></video>`}</div>`;
-      return `<a class="xp-m" href="${esc(url)}" target="_blank" rel="noopener noreferrer"><img src="${snsImg(m.src, "small")}" alt="동영상" loading="lazy" referrerpolicy="no-referrer"><i class="xp-play" aria-hidden="true"></i></a>`;
+      return `<${tag} class="xp-m"${open(url)}><img src="${snsImg(m.src, "small")}" alt="동영상" loading="lazy" referrerpolicy="no-referrer"><i class="xp-play" aria-hidden="true"></i></${tag}>`;
     }
-    return `<a class="xp-m" href="${esc(url)}/photo/${i + 1}" target="_blank" rel="noopener noreferrer"><img src="${snsImg(m.src, small || n > 1 ? "small" : "medium")}" alt="사진" loading="lazy" referrerpolicy="no-referrer"></a>`;
+    return `<${tag} class="xp-m"${open(`${url}/photo/${i + 1}`)}><img src="${snsImg(m.src, small || n > 1 ? "small" : "medium")}" alt="사진" loading="lazy" referrerpolicy="no-referrer"></${tag}>`;
   };
   return `<div class="xp-media n${n}${small ? " sm" : ""}"${one && !small ? ` style="aspect-ratio:${ratio.toFixed(3)}"` : ""}>${ms.map(item).join("")}</div>`;
 }
@@ -2810,6 +2812,7 @@ function snsPostHtml(p){
       <div class="xp-main">
         <div class="xp-top">${snsHeadHtml(a, url, p.createdAt)}<a class="xp-open" href="${esc(url)}" target="_blank" rel="noopener noreferrer" aria-label="X에서 열기" title="X에서 열기">${SNS_IC.open}</a></div>
         ${(p.rich || []).length ? `<div class="xp-text"${p.lang && /^[a-z]{2,3}$/.test(p.lang) ? ` lang="${esc(p.lang)}"` : ""}>${snsRich(p.rich)}</div>` : ""}
+        ${p.more ? `<a class="xp-showmore" href="${esc(url)}" target="_blank" rel="noopener noreferrer">더 보기</a>` : ""}
         ${tr}
         ${snsMediaHtml(p.media, url)}
         ${c ? `<a class="xp-card${c.large && snsHref(c.img) ? " lg" : ""}" href="${esc(c.href)}" target="_blank" rel="noopener noreferrer">${snsHref(c.img) ? `<span class="xp-card-im"><img src="${esc(c.img)}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>` : ""}<span class="xp-card-tx">${c.domain ? `<small>${esc(c.domain)}</small>` : ""}<b>${esc(c.title)}</b></span></a>` : ""}

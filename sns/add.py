@@ -47,19 +47,11 @@ def fetch(pid):
     return d
 
 
-def u16(s):
-    return s.encode("utf-16-le")
-
-
-def u16slice(b, a, z):
-    return b[a * 2:z * 2].decode("utf-16-le", "replace")
-
-
 def rich(d):
     """Post text as a list of plain strings and [label, href] links (t.co expanded, media links dropped)."""
-    text = d.get("text") or ""
-    b = u16(text)
-    n = len(b) // 2
+    # X counts entity positions in characters (code points), the same way Python indexes str
+    b = d.get("text") or ""
+    n = len(b)
     lo, hi = (d.get("display_text_range") or [0, n])[:2]
     ent = d.get("entities") or {}
     spans = []
@@ -78,12 +70,12 @@ def rich(d):
         if a < pos or a >= hi:
             continue
         if a > pos:
-            out.append(html.unescape(u16slice(b, pos, a)))
+            out.append(html.unescape(b[pos:a]))
         if href:
-            out.append([label or html.unescape(u16slice(b, a, z)), href])
+            out.append([label or html.unescape(b[a:z]), href])
         pos = z
     if pos < hi:
-        out.append(html.unescape(u16slice(b, pos, hi)))
+        out.append(html.unescape(b[pos:hi]))
     # drop a reply's leading mentions and stray whitespace at the ends
     if out and isinstance(out[0], str):
         out[0] = out[0].lstrip()
@@ -161,6 +153,8 @@ def build(d):
         "replies": d.get("conversation_count") or 0,
         "likes": d.get("favorite_count") or 0,
     }
+    if d.get("note_tweet"):
+        p["more"] = True  # a long post: the embed data only carries the first part, X shows the rest
     cd = card(d)
     if cd and not p["media"]:
         p["card"] = cd
@@ -220,7 +214,7 @@ def main(argv):
         topics = [t for t in pick.get("topics") or [] if t in TOPICS]
         old = by_id.get(p["id"])
         if old:
-            old.update({k: p[k] for k in ("rich", "media", "replies", "likes", "author") if k in p})
+            old.update({k: p[k] for k in ("rich", "media", "replies", "likes", "author", "lang", "more", "card", "quote") if k in p})
             if topics:
                 old["topics"] = topics
             if pick.get("ko"):
