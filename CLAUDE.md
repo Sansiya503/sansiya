@@ -115,6 +115,7 @@ bash tests/run_e2e.sh e2e_menubar e2e_topics   # 일부만
 - 사용자 요청: X에서 매일 5개 이상, 관심 분야(AI, 과학, 기술 발전, 언리얼 엔진, 게임 개발, 게임 그래픽, 그리고 건축·조경·인테리어·도시계획·도시설계·공간디자인) 소식을 SNS 메뉴에 올려요. 사용자가 팔로우한 AI 인물들 소식도 참고해요. 화면은 X와 최대한 비슷하게 해요.
 - 방법: X에서 글을 고르고 → `picks.json`(주소, topics, 한국어 번역 `ko`, 팔로우 여부)을 만들고 → `python sns/add.py picks.json` → `sns/feed.json`을 커밋·push해요.
 - X는 **사용자 Chrome(Claude in Chrome 확장)**에 로그인돼 있어요. Claude 앱 브라우저에서는 X 로그인이 안 됐어요(Google 로그인이 막힘). 팔로잉 탭 + 주제 검색(`min_faves:300 since:날짜`)으로 고르면 좋아요.
+- X가 글 언어를 잘못 알아보면(영어 글을 de·sl 등으로) picks에 `"lang": "en"`을 넣어 바로잡아요.
 - X 글 위치(entity indices)는 UTF-16이 아니라 글자(코드 포인트) 기준이에요. 긴 글(note_tweet)은 앞부분만 받아져서 `more: true`로 "더 보기" 링크를 붙여요.
 - 주제 탭(`SNS_TOPICS`): 전체 · AI(`ai`) · 과학(`science`) · 기술(`tech`) · 언리얼 엔진(`unreal`) · 게임 개발(`gamedev`) · 게임 그래픽(`graphics`) · 건축(`arch`, 맨 오른쪽. 건축·조경·인테리어·도시계획·도시설계·공간디자인을 모두 여기에).
 - 건축 소식 찾기 좋은 곳: @dezeen, @parametricarch, @designboom, @ArchDaily, @archinect 와 `(urbanism OR "urban planning" OR "landscape architecture" OR "interior design" OR 도시계획 OR 조경 OR 인테리어 OR 공간디자인)` 검색.

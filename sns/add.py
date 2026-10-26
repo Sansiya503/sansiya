@@ -6,6 +6,7 @@
 
 picks.json 은 이렇게 생긴 목록이에요 (url 대신 id 도 돼요):
     [{"url": "https://x.com/karpathy/status/123…", "topics": ["ai"], "ko": "한국어 번역", "following": true}]
+    (X가 언어를 잘못 알아본 글은 "lang": "en" 처럼 바로잡을 수 있어요)
 
 topics: ai · science · tech · unreal · gamedev · graphics · arch(건축·조경·인테리어·도시계획·도시설계·공간디자인)
 글 내용은 X의 공개 임베드용 주소(cdn.syndication.twimg.com)에서 받아요. 로그인·키가 필요 없어요.
@@ -219,11 +220,15 @@ def main(argv):
                 old["topics"] = topics
             if pick.get("ko"):
                 old["ko"] = pick["ko"]
+            if pick.get("lang"):
+                old["lang"] = pick["lang"]
             updated += 1
         else:
             p.update({"topics": topics or ["tech"], "addedOn": pick.get("addedOn") or today, "following": bool(pick.get("following"))})
             if pick.get("ko"):
                 p["ko"] = pick["ko"]
+            if pick.get("lang"):
+                p["lang"] = pick["lang"]
             feed["posts"].append(p)
             by_id[p["id"]] = p
             added += 1
