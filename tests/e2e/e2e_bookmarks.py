@@ -27,7 +27,7 @@ with sync_playwright() as pw:
                icons: document.querySelectorAll('.bmk-add .bmk-ic').length, sideIcons: document.querySelectorAll('.bmk-side-head .bmk-ic').length,
                refresh: !!document.querySelector('[data-bmkrefresh]'), headerSearch: getComputedStyle(document.querySelector('.top .search')).display }; }""")
     ok("PC: collections sidebar on the left", L["sideLeft"] and 260 <= L["side"] <= 290, str(L["side"]))
-    ok("PC: 전체보기 active in green, sort + trash icons", L["all"] == "전체보기" and L["allColor"] == "rgb(0, 168, 75)" and L["sideIcons"] == 2, L["allColor"])
+    ok("PC: 전체보기 active in orange, sort + trash icons", L["all"] == "전체보기" and L["allColor"] == "rgb(242, 166, 0)" and L["sideIcons"] == 2, L["allColor"])
     ok("PC: placeholders match", L["colq"] == "컬렉션 검색 및 추가" and L["q"] == "검색어 입력" and L["inp"] == "URL 및 텍스트 입력, 파일 끌어 놓기", str(L))
     ok("PC: input has link / file / memo icons, refresh button, header search hidden", L["icons"] == 3 and L["refresh"] and L["headerSearch"] == "none")
     tabs = pg.eval_on_selector_all(".bmk-tabs button", "els => els.map(e => e.textContent)")
@@ -135,6 +135,9 @@ with sync_playwright() as pw:
         pg.click("[data-bmkselect]"); pg.locator(".bmk-go[data-bmkpick]").first.click(); pg.wait_for_timeout(80)
         sb = pg.evaluate("(() => { const r = document.querySelector('.bmk-selbar').getBoundingClientRect(); return [r.left >= 0, r.right <= document.documentElement.clientWidth]; })()")
         ok(f"{t} select bar fits the screen", sb == [True, True], str(sb))
+        pg.click("[data-bmksort]"); pg.wait_for_timeout(80)
+        ov = pg.evaluate("(() => { const a = document.querySelector('.toast').getBoundingClientRect(), b = document.querySelector('.bmk-selbar').getBoundingClientRect(); return a.bottom <= b.top + 1; })()")
+        ok(f"{t} toast sits above the select bar", ov)
         pg.screenshot(path=f"{OUT}/shots/bmk-{w}-{scheme}.png", full_page=True)
         ok(f"{t} no errors", not errs, str(errs))
         c.close()
