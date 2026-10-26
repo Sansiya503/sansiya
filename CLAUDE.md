@@ -33,16 +33,16 @@
 
 ### app.js 지도 (섹션 주석 `/* ---------- 이름 ---------- */` 으로 찾기)
 
-utils → IndexedDB KV → backends(`TABLES`: DB 행 ↔ 앱 객체 변환) → state(`S`) → sync(pull/flush, outbox) → photo URLs → filtering → render: chrome / views(아카이브·통계) → stocks(helpers, quotes, Toss link, market strip, allocation 도넛, main, detail, search/form, dividend) → overlays(편집기·설정 등, 안드로이드 뒤로가기 지원) → gate(설정·로그인) → photo album(`PH_*`, 100장씩 무한 스크롤, 주제 칩) → bookmarks(링크 + 앱 안 즐겨찾기) → SNS(`SNS_*`, X처럼 생긴 피드, `sns/feed.json`을 읽어요) → bitcoin(`BT_*`, 실시간 시세·블록·환산·김치 프리미엄) → events(클릭/키보드, 헤더 시계 `tickClock`) → service worker → boot.
+utils → IndexedDB KV → backends(`TABLES`: DB 행 ↔ 앱 객체 변환) → state(`S`) → sync(pull/flush, outbox) → photo URLs → filtering → render: chrome / views(아카이브·통계) → stocks(helpers, quotes, Toss link, market strip, allocation 도넛, main, detail, search/form, dividend) → overlays(편집기·설정 등, 안드로이드 뒤로가기 지원) → gate(설정·로그인) → photo album(`PH_*`, 100장씩 무한 스크롤, 주제 칩) → bookmarks(`bmk*`: 왼쪽 컬렉션 + 검색·종류 탭·입력창·월별 목록·선택·휴지통) → SNS(`SNS_*`, X처럼 생긴 피드, `sns/feed.json`을 읽어요) → bitcoin(`BT_*`, 실시간 시세·블록·환산·김치 프리미엄) → events(클릭/키보드, 헤더 시계 `tickClock`) → service worker → boot.
 
 - 화면은 `render()`가 문자열 HTML로 다시 그려요. 자주 바뀌는 숫자(비트코인 등)는 제자리 갱신 함수(`btPaintLive` 등)가 따로 있어요.
 - 테이블이 아직 없을 때도 앱이 죽지 않게 `missingTable()`로 넘어가요. 새 테이블을 쓸 때도 같은 방식으로 해 주세요.
-- 브라우저 저장소 키: `sansiya-mode`, `sansiya-config`, `sansiya-prefs`, `sansiya-theme`, `sansiya-btc`. KV: `local:*`, `btc-snap`, `logos-v`.
+- 브라우저 저장소 키: `sansiya-mode`, `sansiya-config`, `sansiya-prefs`, `sansiya-theme`, `sansiya-btc`. KV: `local:*`, `btc-snap`, `logos-v`, `sns-feed`, `u:<아이디>:bmTrash`(북마크 휴지통, 이 기기에만 30일).
 
 ## 배포 순서 (매번 이대로)
 
 1. 파일을 고쳐요.
-2. **버전 두 곳을 같이 올려요.** `app.js` 8번째 줄 `APP_VERSION`과 `sw.js` 3번째 줄 `VERSION`(`sansiya-v…`). 작은 변경은 마지막 숫자 +1. 지금은 **1.13.2**이에요.
+2. **버전 두 곳을 같이 올려요.** `app.js` 8번째 줄 `APP_VERSION`과 `sw.js` 3번째 줄 `VERSION`(`sansiya-v…`). 작은 변경은 마지막 숫자 +1. 지금은 **1.14.0**이에요.
    - `CLAUDE.md`, `tests/`, `design/`, `sns/`처럼 앱 코드가 아닌 파일만 바꿀 때는 버전을 올리지 않아요. (`sns/feed.json`은 서비스 워커가 캐시하지 않아서 올리면 바로 보여요.)
 3. 관련 테스트를 돌려요 (아래 "테스트").
 4. 커밋해요. 메시지는 `vX.Y.Z: 한국어 한 줄 요약`. 작성자는 `Sansiya503 <sansiya503@users.noreply.github.com>`.
@@ -60,6 +60,8 @@ utils → IndexedDB KV → backends(`TABLES`: DB 행 ↔ 앱 객체 변환) → 
 - 반응형 기준: 860px(검색창이 둘째 줄로), 600px, 560px(폰). 360px 폭에서도 옆으로 스크롤이 생기면 안 돼요.
 - 화면 글자는 한국어로 써요 (사용자가 영어를 한글로 바꿔 달라고 한 적 있어요).
 - 메뉴 이름 왼쪽의 둥근 아이콘, 사진 갤러리(정사각형 6칸 + 무한 스크롤, 조회수 없음), 주제 칩(All·여행·음식·디자인·건축·조경·인테리어), 헤더 시계(서울 시간, `08:05` + 파란 작은 `a.m`, 아래 `2026-10-23 (금)`)는 사용자가 정한 모양이니 그대로 유지해요.
+- 북마크 화면은 사용자가 보낸 북마크 서비스 화면을 그대로 따라 만든 거예요(왼쪽 "전체보기"+정렬·휴지통 아이콘, "컬렉션 검색 및 추가", 컬렉션 목록과 개수 / 오른쪽 "검색어 입력"+새로고침, 탭 전체·링크·사진/동영상·파일·메모(굵은 밑줄), 회색 입력창 "URL 및 텍스트 입력, 파일 끌어 놓기"+링크·파일·메모 아이콘, "2026.10 … 선택" 월 머리, 86px 썸네일 + 제목 + "출처 | 종류" + ⋮, 맨 위로 버튼). 색은 `--bmk-*` 토큰(초록 `--bmk-on`).
+- 북마크 데이터 규칙: 컬렉션 = `bookmarks.tags`. 메모 = `kind:"link"`이고 `url`이 빈 줄(테이블 kind 제약 때문에). 종류는 주소로 판단(`bmkType`: pdf·doc 등은 파일, 이미지·영상 확장자나 YouTube 등은 사진/동영상). 빈 컬렉션은 `sansiya-prefs`의 `bmkCols`에만 있어요(기기별). 링크 미리보기 이미지는 아직 없고 사이트 아이콘 타일을 써요.
 
 ## 데이터와 Supabase
 
@@ -119,6 +121,8 @@ bash tests/run_e2e.sh e2e_menubar e2e_topics   # 일부만
 - 2026-10-25 첫 소식 11개 + 건축 10개를 올렸어요. 매일 아침 9시쯤 Claude 앱 예약 작업 "산시야 SNS 오늘의 소식 올리기"(`sansiya-sns-daily`)가 올려요(앱·Chrome이 켜져 있어야 해요).
 
 ## 최근 변경
+
+- v1.14.0 북마크 화면을 사용자가 보낸 레퍼런스처럼 새로 만듦: 컬렉션(=태그) 사이드바, 검색·새로고침, 전체/링크/사진·동영상/파일/메모 탭, 입력창(링크 저장·사진 올리기·메모), 월별 목록, 선택 모드(컬렉션 지정·삭제), ⋮ 메뉴, 휴지통(30일, 복원), 맨 위로 버튼. 사진·링크를 끌어다 놓아도 저장돼요.
 
 - v1.13.2 SNS 맨 오른쪽에 건축 탭(건축·조경·인테리어·도시계획·도시설계·공간디자인), 건축 소식 10개
 - v1.13.1 SNS 첫 소식 11개, 긴 글 "더 보기", 인용 글 속 사진이 상자 밖으로 빠지던 문제 수정, 멘션 링크 위치 수정

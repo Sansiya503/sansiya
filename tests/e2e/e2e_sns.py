@@ -111,8 +111,8 @@ with sync_playwright() as pw:
         pg.locator(".xp").first.locator(".xp-act.bm").click(); pg.wait_for_timeout(150)
         ok(f"{t} bookmark toggles on", pg.locator(".xp").first.locator(".xp-act.bm").get_attribute("aria-pressed") == "true")
         pg.locator("#tabbar [data-view=bookmarks]").click(); pg.wait_for_timeout(200)
-        bm = pg.text_content(".bm-list") or ""
-        ok(f"{t} saved post shows in 북마크 with #SNS", "연구자 1" in bm and "#SNS" in bm, bm[:120])
+        bm = pg.text_content(".bmk-list") or ""
+        ok(f"{t} saved post shows in 북마크 under an SNS collection", "연구자 1" in bm and pg.locator("[data-bmkcol='SNS']").count() == 1, bm[:120])
         pg.locator("#tabbar [data-view=sns]").click(); pg.wait_for_selector(".xp")
         ok(f"{t} topic remembered", pg.get_attribute("[data-snstopic=science]", "aria-selected") == "true")
         pg.locator(".xp").first.locator(".xp-act.bm").click(); pg.wait_for_timeout(150)

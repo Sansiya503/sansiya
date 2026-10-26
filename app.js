@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.13.2";
+const APP_VERSION = "1.14.0";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -303,6 +303,7 @@ function makeLocalBackend(){
 }
 
 /* ---------- state ---------- */
+const BMK_TAB_KEYS = ["all","link","media","file","memo"];
 const S = {
   B:null, uid:null, email:"",
   entries:[], loaded:false, cats:DEFAULT_CATS.slice(),
@@ -313,10 +314,11 @@ const S = {
   stocks:[], divs:[], quotes:{}, fx:null, quotesAt:0, qLoading:false, qErr:"",
   stockTab:"hold", divYear:new Date().getFullYear(), hist:{}, market:{}, broker:undefined, showHidden:false,
   holdSort:"value", holdShow:"value", hideAmt:false,
-  photos:[], bookmarks:[], albumMissing:false, phBusy:0, phQ:"", phFav:false, phTopic:"all", phLimit:100, bmTab:"links", bmTag:null, bmLoading:new Set(), snsTopic:"all"
+  photos:[], bookmarks:[], albumMissing:false, phBusy:0, phQ:"", phFav:false, phTopic:"all", phLimit:100, bmLoading:new Set(), bmTrash:[], snsTopic:"all",
+  bmkTab:"all", bmkCol:null, bmkQ:"", bmkColQ:"", bmkSort:"new", bmkSel:null, bmkMenu:null, bmkTrash:false, bmkEmptyAsk:false, bmkCols:[]
 };
-try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; if(p.bmTab === "favs") S.bmTab = "favs"; if(p.phTopic) S.phTopic = p.phTopic; if(p.snsTopic) S.snsTopic = p.snsTopic; }catch(e){}
-function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort, holdSort:S.holdSort, holdShow:S.holdShow, hideAmt:S.hideAmt, bmTab:S.bmTab, phTopic:S.phTopic, snsTopic:S.snsTopic })); }catch(e){} }
+try{ const p = JSON.parse(localStorage.getItem("sansiya-prefs") || "{}"); if(p.layout) S.layout = p.layout; if(p.sort) S.sort = p.sort; if(p.holdSort) S.holdSort = p.holdSort; if(p.holdShow) S.holdShow = p.holdShow; if(p.hideAmt) S.hideAmt = true; if(BMK_TAB_KEYS.includes(p.bmkTab)) S.bmkTab = p.bmkTab; if(["new","old","name"].includes(p.bmkSort)) S.bmkSort = p.bmkSort; if(Array.isArray(p.bmkCols)) S.bmkCols = p.bmkCols.filter(t => typeof t === "string").slice(0, 50); if(p.phTopic) S.phTopic = p.phTopic; if(p.snsTopic) S.snsTopic = p.snsTopic; }catch(e){}
+function savePrefs(){ try{ localStorage.setItem("sansiya-prefs", JSON.stringify({ layout:S.layout, sort:S.sort, holdSort:S.holdSort, holdShow:S.holdShow, hideAmt:S.hideAmt, bmkTab:S.bmkTab, bmkSort:S.bmkSort, bmkCols:S.bmkCols, phTopic:S.phTopic, snsTopic:S.snsTopic })); }catch(e){} }
 const k = name => `u:${S.uid}:${name}`;
 const saveCache = () => KV.set(k("entries"), S.entries);
 const saveOutbox = () => KV.set(k("outbox"), S.outbox);
@@ -520,7 +522,11 @@ function render(){
     bindPhotoMore();
   }
   else if(S.view === "sns"){ m.innerHTML = snsHtml(); bindSnsMore(); snsLoad(); }
-  else if(S.view === "bookmarks"){ m.innerHTML = bookmarksHtml(); if(S.bmTab === "favs" && favItems().stocks.length) refreshQuotes(); }
+  else if(S.view === "bookmarks"){
+    const a = document.activeElement;
+    if(m.querySelector(".bmk") && a && /^(bmkQ|bmkColQ|bmkIn)$/.test(a.id)){ setH("bmkList", bmkListHtml()); setH("bmkCols", bmkColsHtml()); }
+    else m.innerHTML = bookmarksHtml();
+  }
   else m.innerHTML = statsHtml();
   if(S.view === "bitcoin") btStart(); else btStop();
   document.body.dataset.view = S.view;
@@ -2079,7 +2085,8 @@ async function signOut(){
 function resetState(){
   S.uid = null; S.email = ""; S.entries = []; S.loaded = false; S.outbox = []; S.lastSync = 0; S.urls = new Map(); S.syncErr = ""; S.sync = "idle"; S.cats = DEFAULT_CATS.slice();
   S.stocks = []; S.divs = []; S.quotes = {}; S.fx = null; S.quotesAt = 0; S.qErr = ""; S.qLoading = false; S.hist = {}; S.market = {}; S.broker = undefined;
-  S.photos = []; S.bookmarks = []; S.albumMissing = false; S.phBusy = 0; S.bmTag = null; S.bmLoading = new Set();
+  S.photos = []; S.bookmarks = []; S.albumMissing = false; S.phBusy = 0; S.bmLoading = new Set();
+  S.bmTrash = []; S.bmkCol = null; S.bmkQ = ""; S.bmkSel = null; S.bmkMenu = null; S.bmkTrash = false; S.bmkEmptyAsk = false;
 }
 function onSignedOut(){
   if(!S.uid) return;
@@ -2165,8 +2172,8 @@ function parseImport(text){
     .map(r => ({ id:isUuid(r.id) ? r.id : uuid(), path:r.path, thumb:typeof r.thumb === "string" && r.thumb.startsWith(S.uid + "/") ? r.thumb : r.path, date:/^\d{4}-\d{2}-\d{2}$/.test(r.date || "") ? r.date : today(),
       caption:String(r.caption || "").slice(0, 500), w:+r.w || 0, h:+r.h || 0, topics:Array.isArray(r.topics) ? r.topics.filter(x => PH_TOPIC_KEYS.includes(x)) : [], createdAt:+r.createdAt || now2, updatedAt:+r.updatedAt || now2 }));
   const bookmarks = (Array.isArray(j.bookmarks) ? j.bookmarks : []).filter(r => r && ["link","entry","stock","photo"].includes(r.kind))
-    .filter(r => r.kind === "link" ? normUrl(r.url) && !S.bookmarks.some(b => b.kind === "link" && b.url === normUrl(r.url)) : r.ref && !S.bookmarks.some(b => b.kind === r.kind && b.ref === r.ref))
-    .map(r => ({ id:isUuid(r.id) ? r.id : uuid(), kind:r.kind, ref:String(r.ref || ""), url:r.kind === "link" ? normUrl(r.url) : "", title:String(r.title || "").slice(0, 200), memo:String(r.memo || "").slice(0, 1000),
+    .filter(r => r.kind === "link" ? (r.url ? normUrl(r.url) && !S.bookmarks.some(b => b.kind === "link" && b.url === normUrl(r.url)) : String(r.memo || "").trim() && !S.bookmarks.some(b => b.id === r.id)) : r.ref && !S.bookmarks.some(b => b.kind === r.kind && b.ref === r.ref))
+    .map(r => ({ id:isUuid(r.id) ? r.id : uuid(), kind:r.kind, ref:String(r.ref || ""), url:r.kind === "link" && r.url ? normUrl(r.url) : "", title:String(r.title || "").slice(0, 200), memo:String(r.memo || "").slice(0, 5000),
       tags:Array.isArray(r.tags) ? r.tags.map(String).slice(0, 20) : [], createdAt:+r.createdAt || now2, updatedAt:+r.updatedAt || now2 }));
   return { entries:out, cats, dropped, overwrite:out.filter(e => existing.has(e.id)).length, stocks, divs, photos, bookmarks };
 }
@@ -2384,13 +2391,13 @@ async function photoThumb(file){
     return { w, h, thumb:b };
   }catch(e){ return { w:0, h:0, thumb:null }; }
 }
-async function uploadAlbum(files){
+async function uploadAlbum(files, opts = {}){
   if(!S.B) return;
   if(S.B.kind !== "local" && !navigator.onLine){ toast("사진은 인터넷에 연결되어 있을 때 올릴 수 있어요."); return; }
   if(S.albumMissing){ toast("사진 저장 공간을 준비하는 중이에요. 잠시 뒤 다시 올려 주세요."); return; }
   const list = [...files].filter(f => /^image\//.test(f.type) || !f.type).slice(0, 40);
   if(!list.length){ toast("사진 파일만 올릴 수 있어요."); return; }
-  S.phBusy += list.length; if(S.view === "photos") render();
+  S.phBusy += list.length; if(S.view === "photos") render(); else if(S.view === "bookmarks") toast(`사진 ${list.length}장을 올리는 중…`);
   let ok = 0, fail = "";
   const one = async f => {
     try{
@@ -2405,15 +2412,16 @@ async function uploadAlbum(files){
         S.urls.set(path, { url:URL.createObjectURL(main), exp:Date.now() + 3600e3 });
         if(tb && thumb !== path) S.urls.set(thumb, { url:URL.createObjectURL(tb), exp:Date.now() + 3600e3 });
       }
-      const now = Date.now(), rec = { id:uuid(), path, thumb, date, caption:"", w, h, topics:PH_TOPIC_KEYS.includes(S.phTopic) ? [S.phTopic] : [], createdAt:now, updatedAt:now };
+      const now = Date.now(), rec = { id:uuid(), path, thumb, date, caption:"", w, h, topics:!opts.fav && PH_TOPIC_KEYS.includes(S.phTopic) ? [S.phTopic] : [], createdAt:now, updatedAt:now };
       S.photos.push(rec); savePhotos(); ok++;
       enqueue({ op:"row", table:"photos", rec });
+      if(opts.fav) putBookmark({ id:uuid(), kind:"photo", ref:rec.id, url:"", title:"", memo:"", tags:opts.tags || [], createdAt:now, updatedAt:now });
     }catch(err){
       const m = String(err && (err.message || "") || "");
       fail = err && err.code === "heic" ? "HEIC 사진은 JPG로 바꿔서 올려 주세요."
         : err && err.code === "big" || /size|too large|exceed/i.test(m) ? "20MB가 넘는 사진은 올릴 수 없어요."
         : isNetErr(err) ? "인터넷 연결이 끊겨 일부를 올리지 못했어요." : "일부 사진을 올리지 못했어요.";
-    }finally{ S.phBusy = Math.max(0, S.phBusy - 1); if(S.view === "photos") render(); }
+    }finally{ S.phBusy = Math.max(0, S.phBusy - 1); if(S.view === "photos" || S.view === "bookmarks") render(); }
   };
   for(let i = 0; i < list.length; i += 3) await Promise.all(list.slice(i, i + 3).map(one));
   toast(ok ? `사진 ${ok}장을 올렸어요.${fail ? " " + fail : ""}` : (fail || "사진을 올리지 못했어요."));
@@ -2563,7 +2571,7 @@ function deletePhoto(){
   toast("사진을 지웠어요.");
 }
 
-/* ---------- bookmarks: web links + in-app favourites ---------- */
+/* ---------- bookmarks: collections on the left, one list of links, memos and favourites on the right ---------- */
 const favOf = (kind, ref) => S.bookmarks.find(b => b.kind === kind && b.ref === ref);
 const isFav = (kind, ref) => !!favOf(kind, ref);
 const favBtn = (kind, ref) => { const on = isFav(kind, ref); return `<button class="btn small fav-btn" type="button" data-fav="${kind}:${esc(ref)}" aria-pressed="${on}" aria-label="즐겨찾기">${on ? "★" : "☆"}<span class="fav-l">즐겨찾기</span></button>`; };
@@ -2596,72 +2604,275 @@ function bmIcon(b){
   const tint = BM_TINTS[[...h].reduce((a, c) => a + c.charCodeAt(0), 0) % BM_TINTS.length];
   return `<span class="bm-ic" style="--tint:${tint}"><i aria-hidden="true">${esc(ch)}</i>${h ? `<img class="bm-fav" src="https://icons.duckduckgo.com/ip3/${encodeURIComponent(h)}.ico" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}</span>`;
 }
-function bookmarksHtml(){
-  const links = S.bookmarks.filter(b => b.kind === "link");
-  const favs = favItems(), nf = favs.entries.length + favs.stocks.length + favs.photos.length;
-  return `<div class="bm">
-    <div class="vhead"><h2>북마크</h2>
-      <div class="tools"><div class="seg bm-seg" role="group" aria-label="북마크 종류">
-        <button type="button" data-bmtab="links" aria-pressed="${S.bmTab !== "favs"}">웹 링크 <span class="mono">${links.length}</span></button>
-        <button type="button" data-bmtab="favs" aria-pressed="${S.bmTab === "favs"}">앱 즐겨찾기 <span class="mono">${nf}</span></button>
-      </div></div></div>
-    ${S.bmTab === "favs" ? favsHtml(favs) : linksHtml(links)}
-  </div>`;
+// one list of links, memos and in-app favourites; collections are the bookmark tags.
+// a memo is a "link" row without a url (the table only allows link/entry/stock/photo).
+const BMK_TABS = [["all","전체"],["link","링크"],["media","사진/동영상"],["file","파일"],["memo","메모"]];
+const BMK_SORTS = { new:"최신순", old:"오래된순", name:"이름순" };
+const BMK_NONE = "__none";
+const BMK_FILE = /\.(pdf|docx?|xlsx?|pptx?|hwpx?|zip|rar|7z|txt|csv|key|pages|numbers|dwg|psd|ai)$/i;
+const BMK_MEDIA = /\.(jpe?g|png|gif|webp|avif|svg|mp4|mov|webm|m4v)$/i;
+const BMK_MEDIA_HOST = /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|instagram\.com|tiktok\.com|flickr\.com|unsplash\.com|pinterest\.[a-z.]+)$/i;
+const BMK_IC = {
+  sort:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M4 12h7M4 18h4M17.5 5v14m0 0-3-3m3 3 3-3"/></svg>`,
+  trash:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5h16M9.5 6.5V4h5v2.5M6.5 6.5l.9 13.5h9.2l.9-13.5M10 10.5v6M14 10.5v6"/></svg>`,
+  search:`<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg>`,
+  refresh:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4.5H15"/></svg>`,
+  link:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></svg>`,
+  file:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h9.5a1.5 1.5 0 0 1 1.5 1.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5V9z"/><path d="M4 9h5V4"/></svg>`,
+  memo:`<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M8 9h8M8 12.5h8M8 16h5"/></svg>`,
+  more:`<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5.5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="18.5" r="1.6"/></svg>`,
+  top:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h14M12 20V9m0 0-5 5m5-5 5 5"/></svg>`,
+  check:`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5.5 12.5 4 4 9-9.5"/></svg>`
+};
+const saveTrash = () => KV.set(k("bmTrash"), S.bmTrash);
+const bmkTags = it => it.b.tags || [];
+const bmkCurTags = () => S.bmkCol && S.bmkCol !== BMK_NONE ? [S.bmkCol] : [];
+const bmkParseTags = s => [...new Set(String(s || "").split(/[,#]/).map(x => x.trim()).filter(Boolean).map(x => x.slice(0, 30)))].slice(0, 20);
+function bmkType(b){
+  if(b.kind === "photo") return "media";
+  if(b.kind !== "link") return "fav";
+  if(!b.url) return "memo";
+  let path = ""; try{ path = new URL(b.url).pathname; }catch(e){}
+  if(BMK_FILE.test(path)) return "file";
+  if(BMK_MEDIA.test(path) || BMK_MEDIA_HOST.test(bmHost(b.url))) return "media";
+  return "link";
 }
-function linksHtml(links){
-  const tags = [...new Set(links.flatMap(b => b.tags || []))].sort((a, b) => a.localeCompare(b));
-  if(S.bmTag && !tags.includes(S.bmTag)) S.bmTag = null;
-  const list = links.filter(b => !S.bmTag || (b.tags || []).includes(S.bmTag)).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  const row = b => {
-    const h = bmHost(b.url), loading = S.bmLoading.has(b.id);
-    return `<article class="bm-row">
-      <a class="bm-main" href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">${bmIcon(b)}
-        <span class="bm-tx"><b>${esc(b.title || h || b.url)}</b><small>${esc(h)}${loading ? " · 제목 불러오는 중…" : ""} · ${esc(fmtDate(ymd(new Date(b.createdAt || Date.now()))))}</small>
-        ${b.memo ? `<span class="bm-memo">${esc(b.memo)}</span>` : ""}${(b.tags || []).length ? `<span class="bm-tags">${b.tags.map(t => "#" + esc(t)).join(" ")}</span>` : ""}</span></a>
-      <button type="button" class="bm-more" data-bmedit="${esc(b.id)}" aria-label="${esc(b.title || h)} 편집"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
-    </article>`;
-  };
-  return `<form class="bm-add" id="bmAdd" autocomplete="off">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></svg>
-      <input id="bmUrl" type="text" inputmode="url" placeholder="저장할 웹 주소를 붙여 넣으세요" aria-label="웹 주소" spellcheck="false">
-      <button class="btn primary" type="submit">저장</button>
-    </form>
-    ${tags.length ? `<div class="mfilters bm-tagrow">${tags.map(t => `<button type="button" class="chip ${S.bmTag === t ? "on" : ""}" data-bmtag="${esc(t)}">#${esc(t)}</button>`).join("")}</div>` : ""}
-    ${list.length ? `<div class="bm-list">${list.map(row).join("")}</div>`
-      : `<div class="empty"><h3>${S.bmTag ? "이 태그의 링크가 없어요" : "저장한 링크가 없어요"}</h3><p>읽을거리, 자주 가는 사이트, 나중에 볼 영상 주소를 붙여 넣으면 제목과 사이트 아이콘을 붙여 정리해 드려요.</p></div>`}`;
+// what a row shows: title, "source | kind", a square thumbnail, and what opening it does
+function bmkItem(b){
+  const type = bmkType(b);
+  if(b.kind === "entry"){ const e = S.entries.find(x => x.id === b.ref); if(!e) return null;
+    return { b, type, title:e.title || "제목 없음", src:[catOf(e.cat).name, "기록"], thumb:(e.photos || []).length ? imgTag(e.photos[0]) : `<i class="bmk-code">${esc(e.cat || "")}</i>`, attr:`data-open="${esc(e.id)}"` }; }
+  if(b.kind === "stock"){ const s = S.stocks.find(x => x.id === b.ref); if(!s) return null;
+    return { b, type, title:s.name, src:[s.symbol, "주식"], thumb:avaHtml(s), attr:`data-stock="${esc(s.id)}"` }; }
+  if(b.kind === "photo"){ const p = S.photos.find(x => x.id === b.ref); if(!p) return null;
+    return { b, type, title:p.caption || `${fmtDate(p.date)} 사진`, src:["앨범", "사진"], thumb:imgTag(p.thumb || p.path), attr:`data-photo="${esc(p.id)}"` }; }
+  if(type === "memo"){
+    const text = (b.memo || "").trim(), lines = text.split("\n").map(s => s.trim()).filter(Boolean);
+    return { b, type, title:b.title || lines[0] || "빈 메모", src:[(lines[1] || "").slice(0, 60), "메모"], thumb:`<span class="bmk-note">${esc(text.slice(0, 90))}</span>`, attr:`data-bmkact="memo:${esc(b.id)}"` };
+  }
+  const h = bmHost(b.url);
+  return { b, type, title:b.title || h || b.url, src:[S.bmLoading.has(b.id) ? "제목 불러오는 중…" : h, { link:"링크", media:"사진/동영상", file:"파일" }[type]], thumb:bmIcon(b), href:b.url };
+}
+const bmkItems = () => S.bookmarks.map(bmkItem).filter(Boolean);
+function bmkCollections(items){
+  const m = new Map();
+  items.forEach(it => bmkTags(it).forEach(t => m.set(t, (m.get(t) || 0) + 1)));
+  S.bmkCols.forEach(t => { if(!m.has(t)) m.set(t, 0); });
+  return [...m].sort((a, b) => a[0].localeCompare(b[0], "ko"));
+}
+function bmkList(){
+  let items = bmkItems();
+  if(S.bmkCol === BMK_NONE) items = items.filter(it => !bmkTags(it).length);
+  else if(S.bmkCol) items = items.filter(it => bmkTags(it).includes(S.bmkCol));
+  if(S.bmkTab !== "all") items = items.filter(it => it.type === S.bmkTab);
+  const q = S.bmkQ.trim().toLowerCase();
+  if(q) items = items.filter(it => { const hay = [it.title, ...it.src, it.b.url, it.b.memo, ...bmkTags(it)].join(" ").toLowerCase(); return q.split(/\s+/).every(w => hay.includes(w)); });
+  const at = it => it.b.createdAt || 0;
+  return items.sort(S.bmkSort === "old" ? (a, b) => at(a) - at(b) : S.bmkSort === "name" ? (a, b) => a.title.localeCompare(b.title, "ko") : (a, b) => at(b) - at(a));
+}
+function bookmarksHtml(){
+  if(S.bmkCol && S.bmkCol !== BMK_NONE && !bmkCollections(bmkItems()).some(([t]) => t === S.bmkCol)) S.bmkCol = null;
+  const side = `<aside class="bmk-side">
+      <div class="bmk-side-head">
+        <button type="button" class="bmk-allbtn" data-bmkcol="" aria-current="${!S.bmkCol && !S.bmkTrash}">전체보기</button>
+        <button type="button" class="bmk-ic" data-bmksort title="정렬: ${BMK_SORTS[S.bmkSort]}" aria-label="정렬 바꾸기, 지금은 ${BMK_SORTS[S.bmkSort]}">${BMK_IC.sort}</button>
+        <button type="button" class="bmk-ic" data-bmktrash aria-pressed="${S.bmkTrash}" title="휴지통" aria-label="휴지통">${BMK_IC.trash}</button>
+      </div>
+      <form class="bmk-colq" id="bmkColForm" autocomplete="off"><input id="bmkColQ" type="text" value="${esc(S.bmkColQ)}" placeholder="컬렉션 검색 및 추가" aria-label="컬렉션 검색 및 추가" maxlength="30" enterkeyhint="done"></form>
+      <nav class="bmk-cols" id="bmkCols" aria-label="컬렉션">${bmkColsHtml()}</nav>
+    </aside>`;
+  const pane = S.bmkTrash ? bmkTrashHtml() : `
+      <div class="bmk-top">
+        <label class="bmk-search">${BMK_IC.search}<input id="bmkQ" type="search" value="${esc(S.bmkQ)}" placeholder="검색어 입력" aria-label="북마크 검색" enterkeyhint="search"></label>
+        <button type="button" class="bmk-refresh" data-bmkrefresh title="새로고침" aria-label="새로고침">${BMK_IC.refresh}</button>
+      </div>
+      <nav class="bmk-tabs" role="tablist" aria-label="북마크 종류">${BMK_TABS.map(([key, l]) => `<button type="button" role="tab" data-bmktab="${key}" aria-selected="${S.bmkTab === key}">${l}</button>`).join("")}</nav>
+      <form class="bmk-add" id="bmkAdd" autocomplete="off">
+        <input id="bmkIn" type="text" placeholder="URL 및 텍스트 입력, 파일 끌어 놓기" aria-label="웹 주소나 메모 입력" spellcheck="false" enterkeyhint="done">
+        <button type="button" class="bmk-ic" data-bmkaddlink title="링크 저장" aria-label="링크 저장">${BMK_IC.link}</button>
+        <label class="bmk-ic" title="사진 올리기"><input type="file" id="bmkFile" accept="image/*" multiple hidden aria-label="사진 올리기">${BMK_IC.file}</label>
+        <button type="button" class="bmk-ic" data-bmkact="memo:" title="메모 쓰기" aria-label="메모 쓰기">${BMK_IC.memo}</button>
+      </form>
+      <div class="bmk-list" id="bmkList">${bmkListHtml()}</div>`;
+  return `<div class="bmk">${side}<section class="bmk-pane">${pane}</section>${S.bmkSel ? bmkSelBarHtml() : ""}
+    <button type="button" class="bmk-totop" data-bmktop title="맨 위로" aria-label="맨 위로"${window.scrollY > 500 ? "" : " hidden"}>${BMK_IC.top}</button></div>`;
+}
+function bmkColsHtml(){
+  const all = bmkItems(), q = S.bmkColQ.trim().toLowerCase();
+  const btn = (key, label, n) => `<button type="button" class="bmk-col" data-bmkcol="${esc(key)}" aria-current="${S.bmkCol === key && !S.bmkTrash}"><span>${esc(label)}</span><small>${n}</small></button>`;
+  const cols = bmkCollections(all).filter(([t]) => !q || t.toLowerCase().includes(q));
+  const none = all.filter(it => !bmkTags(it).length).length;
+  const fresh = q && !bmkCollections(all).some(([t]) => t.toLowerCase() === q);
+  return `${!q || "컬렉션 없음".includes(q) ? btn(BMK_NONE, "컬렉션 없음", none) : ""}${cols.map(([t, n]) => btn(t, t, n)).join("")}
+    ${fresh ? `<button type="button" class="bmk-col bmk-newcol" data-bmkact="addcol:"><span>+ ‘${esc(S.bmkColQ.trim())}’ 컬렉션 만들기</span></button>` : ""}`;
+}
+function bmkListHtml(){
+  const list = bmkList();
+  if(!list.length){
+    const q = S.bmkQ.trim(), emptyCol = S.bmkCol && S.bmkCol !== BMK_NONE && S.bmkCols.includes(S.bmkCol) && !bmkItems().some(it => bmkTags(it).includes(S.bmkCol));
+    return `<div class="bmk-empty"><b>${q ? `‘${esc(q)}’에 맞는 항목이 없어요` : S.bmkCol ? "이 컬렉션이 비어 있어요" : S.bmkTab !== "all" ? "아직 이 종류는 없어요" : "아직 저장한 게 없어요"}</b>
+      <p>${q ? "다른 검색어로 찾아보세요." : "위 입력창에 웹 주소를 붙여 넣거나 메모를 적어 보세요. 사진은 끌어다 놓거나 파일 버튼으로 올려요."}</p>
+      ${emptyCol ? `<button type="button" class="btn small" data-bmkact="dropcol:">이 컬렉션 지우기</button>` : ""}</div>`;
+  }
+  const month = it => { if(S.bmkSort === "name") return "이름순"; const d = new Date(it.b.createdAt || Date.now()); return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}`; };
+  let out = "", prev = null;
+  list.forEach((it, i) => {
+    const m = month(it);
+    if(m !== prev){ out += `<div class="bmk-month"><b>${m}</b>${i === 0 ? `<button type="button" class="bmk-selbtn" data-bmkselect>${S.bmkSel ? "취소" : "선택"}</button>` : ""}</div>`; prev = m; }
+    out += bmkRowHtml(it);
+  });
+  return out;
+}
+function bmkRowHtml(it){
+  const id = it.b.id, sel = S.bmkSel, picked = !!(sel && sel.has(id));
+  const body = `<span class="bmk-th">${it.thumb}</span><span class="bmk-tx"><b>${esc(it.title)}</b><small>${it.src.filter(Boolean).map(esc).join(" | ")}</small></span>`;
+  const go = sel ? `<button type="button" class="bmk-go" data-bmkpick="${esc(id)}" aria-pressed="${picked}"><i class="bmk-ck" aria-hidden="true">${BMK_IC.check}</i>${body}</button>`
+    : it.href ? `<a class="bmk-go" href="${esc(it.href)}" target="_blank" rel="noopener noreferrer">${body}</a>`
+    : `<button type="button" class="bmk-go" ${it.attr}>${body}</button>`;
+  return `<article class="bmk-item${picked ? " on" : ""}">${go}${sel ? "" : `<button type="button" class="bmk-more" data-bmkmenu="${esc(id)}" aria-label="${esc(it.title)} 메뉴" aria-expanded="${S.bmkMenu === id}">${BMK_IC.more}</button>${S.bmkMenu === id ? bmkMenuHtml(it) : ""}`}</article>`;
+}
+function bmkMenuHtml(it){
+  const id = esc(it.b.id), b = it.b;
+  const acts = [b.kind === "link" && b.url ? ["edit","편집"] : null, it.type === "memo" ? ["memo","편집"] : null, ["col","컬렉션 지정"], b.url ? ["copy","링크 복사"] : null, ["del","삭제"]].filter(Boolean);
+  return `<div class="bmk-pop" role="menu">${acts.map(([a, l]) => `<button type="button" role="menuitem" data-bmkact="${a}:${id}"${a === "del" ? ' class="danger"' : ""}>${l}</button>`).join("")}</div>`;
+}
+function bmkSelBarHtml(){
+  const n = S.bmkSel.size, total = bmkList().length;
+  return `<div class="bmk-selbar" role="toolbar" aria-label="선택한 항목"><span><b>${n}</b>개 선택</span>
+    <button type="button" data-bmkselall>${n && n === total ? "선택 해제" : "전체 선택"}</button>
+    <button type="button" data-bmkact="col:*"${n ? "" : " disabled"}>컬렉션 지정</button>
+    <button type="button" class="danger" data-bmkact="del:*"${n ? "" : " disabled"}>삭제</button>
+    <button type="button" data-bmkselect>취소</button></div>`;
+}
+function bmkTrashHtml(){
+  const keep = Date.now() - 30 * 86400e3;
+  S.bmTrash = S.bmTrash.filter(x => x.at > keep);
+  const list = S.bmTrash.map(x => ({ x, it:bmkItem(x.rec) })).filter(y => y.it);
+  const row = ({ x, it }) => `<article class="bmk-item"><div class="bmk-go is-off"><span class="bmk-th">${it.thumb}</span><span class="bmk-tx"><b>${esc(it.title)}</b><small>${[...it.src.filter(Boolean), `${fmtDate(ymd(new Date(x.at)))} 지움`].map(esc).join(" | ")}</small></span></div>
+      <span class="bmk-tbtns"><button type="button" class="btn small" data-bmkact="restore:${esc(it.b.id)}">복원</button><button type="button" class="btn small danger" data-bmkact="purge:${esc(it.b.id)}">영구 삭제</button></span></article>`;
+  return `<div class="bmk-trashhead"><div><b>휴지통</b><small>지운 항목은 이 기기에 30일 동안 보관돼요.</small></div>
+      ${list.length ? (S.bmkEmptyAsk ? `<span class="bmk-ask">모두 영구 삭제할까요?</span><button type="button" class="btn small danger" data-bmkact="empty:yes">비우기</button><button type="button" class="btn small" data-bmkact="empty:no">취소</button>` : `<button type="button" class="btn small" data-bmkact="empty:ask">휴지통 비우기</button>`) : ""}</div>
+    <div class="bmk-list">${list.length ? list.map(row).join("") : `<div class="bmk-empty"><b>휴지통이 비어 있어요</b></div>`}</div>`;
+}
+function bmkAct(a, id){
+  S.bmkMenu = null;
+  const ids = id === "*" ? [...(S.bmkSel || [])] : [id];
+  if(a === "edit"){ openBmForm(id); render(); }
+  else if(a === "memo") openMemo(id || null);
+  else if(a === "memodel"){ if(id === "ask" || id === "no"){ OV.confirm = id === "ask"; renderMemo(); } else { const mid = OV.id; closeOv(); bmkDelete([mid]); } }
+  else if(a === "col") openColPicker(ids);
+  else if(a === "copy"){ const b = S.bookmarks.find(x => x.id === id); render(); if(b) navigator.clipboard.writeText(b.url).then(() => toast("링크를 복사했어요."), () => toast("링크를 복사하지 못했어요.")); }
+  else if(a === "del") bmkDelete(ids);
+  else if(a === "restore") bmkRestore([id]);
+  else if(a === "purge"){ S.bmTrash = S.bmTrash.filter(x => x.rec.id !== id); saveTrash(); render(); toast("영구 삭제했어요."); }
+  else if(a === "empty"){ if(id === "yes"){ S.bmTrash = []; saveTrash(); S.bmkEmptyAsk = false; toast("휴지통을 비웠어요."); } else S.bmkEmptyAsk = id === "ask"; render(); }
+  else if(a === "addcol") bmkAddCol();
+  else if(a === "dropcol"){ const c = S.bmkCol; S.bmkCols = S.bmkCols.filter(t => t !== c); S.bmkCol = null; savePrefs(); render(); toast(`‘${c}’ 컬렉션을 지웠어요.`); }
+}
+function bmkDelete(ids){
+  const recs = ids.map(id => S.bookmarks.find(b => b.id === id)).filter(Boolean); if(!recs.length) return;
+  recs.forEach(r => dropBookmark(r.id));
+  const now = Date.now();
+  S.bmTrash = [...recs.map(rec => ({ rec, at:now })), ...S.bmTrash.filter(x => !recs.some(r => r.id === x.rec.id))].slice(0, 300);
+  saveTrash(); S.bmkSel = null; render();
+  toast(`${recs.length}개를 휴지통으로 옮겼어요.`, { label:"되돌리기", fn:() => bmkRestore(recs.map(r => r.id)) });
+}
+function bmkRestore(ids){
+  const back = S.bmTrash.filter(x => ids.includes(x.rec.id)); if(!back.length) return;
+  back.forEach(x => { if(!S.bookmarks.some(b => b.id === x.rec.id)) putBookmark({ ...x.rec, updatedAt:Date.now() }); });
+  S.bmTrash = S.bmTrash.filter(x => !ids.includes(x.rec.id)); saveTrash();
+  render(); toast(`${back.length}개를 되돌렸어요.`);
+}
+function bmkAddCol(){
+  const name = S.bmkColQ.trim().replace(/^#/, "").slice(0, 30); if(!name) return;
+  const have = bmkCollections(bmkItems()).find(([t]) => t.toLowerCase() === name.toLowerCase());
+  if(!have){ S.bmkCols = [...S.bmkCols, name]; savePrefs(); toast(`‘${name}’ 컬렉션을 만들었어요. 항목의 ⋮ 메뉴에서 담을 수 있어요.`); }
+  S.bmkCol = have ? have[0] : name; S.bmkColQ = ""; S.bmkTrash = false; render();
+}
+function bmkAddFromInput(mode){
+  const inp = $("#bmkIn"), v = ((inp && inp.value) || "").trim();
+  if(!v){ toast(mode === "link" ? "저장할 웹 주소를 붙여 넣어 주세요." : "웹 주소나 메모를 적어 주세요."); return; }
+  const parts = v.split(/\s+/), urls = parts.map(normUrl);
+  const allUrls = parts.every((p, i) => urls[i] && (/^[a-z][a-z0-9+.-]*:\/\//i.test(p) || /^[^\s/@]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(p)));
+  if(allUrls){
+    let n = 0; urls.forEach(u => { if(bmkAddLink(u)) n++; });
+    if(n){ inp.value = ""; toast(n > 1 ? `링크 ${n}개를 저장했어요.` : "링크를 저장했어요."); }
+    return;
+  }
+  if(mode === "link"){ toast("웹 주소가 올바르지 않아요."); return; }
+  const now = Date.now();
+  putBookmark({ id:uuid(), kind:"link", ref:"", url:"", title:"", memo:v.slice(0, 5000), tags:bmkCurTags(), createdAt:now, updatedAt:now });
+  inp.value = ""; render(); toast("메모로 저장했어요.");
+}
+function bmkAddLink(href){
+  if(S.bookmarks.some(b => b.kind === "link" && b.url === href)){ toast("이미 저장한 링크예요."); return false; }
+  const now = Date.now(), rec = { id:uuid(), kind:"link", ref:"", url:href, title:"", memo:"", tags:bmkCurTags(), createdAt:now, updatedAt:now };
+  putBookmark(rec); render(); fetchLinkTitle(rec.id);
+  return true;
+}
+function bmkRefresh(btn){
+  if(btn){ btn.classList.add("spin"); setTimeout(() => btn.classList.remove("spin"), 900); }
+  if(S.B && S.B.kind !== "local") pull();
+  S.bookmarks.filter(b => b.kind === "link" && b.url && !b.title).slice(0, 10).forEach(b => fetchLinkTitle(b.id));
+}
+function openColPicker(ids){
+  const recs = ids.map(id => S.bookmarks.find(b => b.id === id)).filter(Boolean); if(!recs.length){ render(); return; }
+  const common = bmkCollections(bmkItems()).map(([t]) => t).filter(t => recs.every(r => (r.tags || []).includes(t)));
+  if(OV) endOvKeepHistory(); OV = { kind:"bmkcol", ids:recs.map(r => r.id), on:new Set(common) };
+  render(); renderColPicker();
+}
+function renderColPicker(){
+  const cols = bmkCollections(bmkItems()).map(([t]) => t);
+  showOv(`<div class="sheetbox" role="dialog" aria-modal="true" aria-label="컬렉션 지정">
+    <div class="sb-head"><span class="ttl">컬렉션 지정${OV.ids.length > 1 ? ` · ${OV.ids.length}개` : ""}</span><div class="sp"><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
+    <form id="bmkColPick" class="sb-body bm-form" autocomplete="off">
+      ${cols.length ? `<div class="bmk-pick">${cols.map(t => `<button type="button" class="bmk-pickc" data-bmkpickcol="${esc(t)}" aria-pressed="${OV.on.has(t)}">${esc(t)}</button>`).join("")}</div>` : `<p class="bmk-pnote">아직 컬렉션이 없어요. 아래에 이름을 적어 만들어 보세요.</p>`}
+      <div class="fld"><label for="bmk-newcol">새 컬렉션</label><input id="bmk-newcol" type="text" maxlength="30" placeholder="새 이름 (예: 건축 레퍼런스)"></div>
+      ${OV.ids.length > 1 ? `<p class="bmk-pnote">고른 컬렉션이 선택한 항목 모두에 더해져요.</p>` : ""}
+      <div class="sb-foot bm-foot"><span class="sp"></span><button class="btn" type="button" data-act="close">취소</button><button class="btn primary" type="submit">적용</button></div>
+    </form></div>`);
+}
+function applyColPicker(){
+  const nv = (($("#bmk-newcol") || {}).value || "").trim().replace(/^#/, "").slice(0, 30);
+  if(nv) OV.on.add(nv);
+  const on = [...OV.on], single = OV.ids.length === 1, now = Date.now(), n = OV.ids.length;
+  OV.ids.forEach(id => { const b = S.bookmarks.find(x => x.id === id); if(b) putBookmark({ ...b, tags:(single ? on : [...new Set([...(b.tags || []), ...on])]).slice(0, 20), updatedAt:now }); });
+  S.bmkCols = S.bmkCols.filter(t => !on.includes(t)); savePrefs();
+  closeOv(); S.bmkSel = null; render(); toast(n > 1 ? `${n}개 항목의 컬렉션을 정했어요.` : "컬렉션을 정했어요.");
+}
+function openMemo(id, text){
+  if(OV) endOvKeepHistory(); OV = { kind:"bmkmemo", id:id || null, confirm:false, init:text || "" };
+  render(); renderMemo(); setTimeout(() => { const t = $("#bmk-memo"); if(t && !id) t.focus(); }, 30);
+}
+function renderMemo(){
+  const b = OV.id ? S.bookmarks.find(x => x.id === OV.id) : null; if(OV.id && !b){ closeOv(); return; }
+  const d = OV.draft || { memo:b ? b.memo : OV.init, tags:b ? (b.tags || []).join(", ") : bmkCurTags().join(", ") };
+  showOv(`<div class="sheetbox" role="dialog" aria-modal="true" aria-label="메모">
+    <div class="sb-head"><span class="ttl">${b ? "메모 편집" : "새 메모"}</span><div class="sp"><button class="btn small ghost" type="button" data-act="close">닫기</button></div></div>
+    <form id="bmkMemoForm" class="sb-body bm-form" autocomplete="off">
+      <div class="fld"><label for="bmk-memo">메모</label><textarea id="bmk-memo" rows="8" maxlength="5000" placeholder="떠오른 생각, 할 일, 붙여 넣은 글을 적어 두세요">${esc(d.memo)}</textarea></div>
+      <div class="fld"><label for="bmk-mtags">컬렉션</label><input id="bmk-mtags" type="text" value="${esc(d.tags)}" placeholder="쉼표로 나눠 적어요 (예: 아이디어, 건축)"></div>
+      <div class="sb-foot bm-foot">${b && OV.confirm
+        ? `<span class="bm-q">이 메모를 휴지통으로 옮길까요?</span><button class="btn small danger" type="button" data-bmkact="memodel:yes">옮기기</button><button class="btn small" type="button" data-bmkact="memodel:no">취소</button>`
+        : `${b ? `<button class="btn ghost danger" type="button" data-bmkact="memodel:ask">삭제</button>` : ""}<span class="sp"></span><button class="btn" type="button" data-act="close">취소</button><button class="btn primary" type="submit">저장</button>`}</div>
+    </form></div>`);
+}
+function saveMemo(){
+  const memo = ($("#bmk-memo").value || "").replace(/\s+$/, "").slice(0, 5000), tagsRaw = $("#bmk-mtags").value;
+  if(!memo.trim()){ OV.draft = { memo, tags:tagsRaw }; toast("메모 내용을 적어 주세요."); return; }
+  const b = OV.id ? S.bookmarks.find(x => x.id === OV.id) : null, now = Date.now(), tags = bmkParseTags(tagsRaw);
+  putBookmark(b ? { ...b, memo, tags, updatedAt:now } : { id:uuid(), kind:"link", ref:"", url:"", title:"", memo, tags, createdAt:now, updatedAt:now });
+  closeOv(); render(); toast(b ? "메모를 고쳤어요." : "메모를 저장했어요.");
 }
 function favItems(){
   const f = S.bookmarks.filter(b => b.kind !== "link").sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   const pick = (kind, arr) => f.filter(b => b.kind === kind).map(b => arr.find(x => x.id === b.ref)).filter(Boolean);
   return { entries:pick("entry", S.entries), stocks:pick("stock", S.stocks), photos:pick("photo", S.photos) };
 }
-function favsHtml(fv){
-  const star = (kind, id, label) => `<button type="button" class="bm-star fav-btn" data-fav="${kind}:${esc(id)}" aria-pressed="true" aria-label="${esc(label)} 즐겨찾기 빼기">★</button>`;
-  const entryRow = e => `<article class="bm-row"><button type="button" class="bm-main" data-open="${esc(e.id)}">
-      <span class="bm-thumb">${(e.photos || []).length ? imgTag(e.photos[0]) : `<i>${esc(e.cat || "")}</i>`}</span>
-      <span class="bm-tx"><b>${esc(e.title || "제목 없음")}</b><small>${sheetNo(e)} · ${esc(catOf(e.cat).name)} · ${esc(fmtDate(e.date))}</small></span></button>${star("entry", e.id, e.title)}</article>`;
-  const stockRow = s => { const q = quoteOf(s);
-    return `<article class="bm-row"><button type="button" class="bm-main" data-stock="${esc(s.id)}">${avaHtml(s)}
-      <span class="bm-tx"><b>${esc(s.name)}</b><small>${esc(s.symbol)}</small></span>
-      <span class="bm-px">${q && num(q.price) ? `<b>${fmtMoney(q.price, s.currency)}</b><small class="${tone(q.changePct)}">${fmtPct(q.changePct)}</small>` : ""}</span></button>${star("stock", s.id, s.name)}</article>`; };
-  const n = fv.entries.length + fv.stocks.length + fv.photos.length;
-  if(!n) return `<div class="empty"><h3>아직 즐겨찾기가 없어요</h3><p>기록, 주식 종목, 사진을 열고 ☆ 즐겨찾기를 누르면 여기에 모여요.</p></div>`;
-  return `${fv.entries.length ? `<section class="bm-sec"><h3>기록<span>${fv.entries.length}</span></h3><div class="bm-list">${fv.entries.map(entryRow).join("")}</div></section>` : ""}
-    ${fv.stocks.length ? `<section class="bm-sec"><h3>주식<span>${fv.stocks.length}</span></h3><div class="bm-list">${fv.stocks.map(stockRow).join("")}</div></section>` : ""}
-    ${fv.photos.length ? `<section class="bm-sec"><h3>사진<span>${fv.photos.length}</span></h3><div class="ph-grid bm-ph">${fv.photos.map(p => `<button type="button" class="ph-tile" data-photo="${esc(p.id)}" aria-label="${esc(fmtDate(p.date))} 사진">${imgTag(p.thumb || p.path)}</button>`).join("")}</div></section>` : ""}`;
-}
 function normUrl(raw){
   let u = String(raw || "").trim(); if(!u) return null;
   if(!/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) u = "https://" + u;
   try{ const x = new URL(u); if(!/^https?:$/.test(x.protocol) || !x.hostname.includes(".")) return null; return x.href; }catch(e){ return null; }
-}
-function addLink(){
-  const inp = $("#bmUrl"); const href = normUrl(inp && inp.value);
-  if(!href){ toast(inp && inp.value.trim() ? "웹 주소가 올바르지 않아요." : "저장할 웹 주소를 붙여 넣어 주세요."); return; }
-  if(S.bookmarks.some(b => b.kind === "link" && b.url === href)){ toast("이미 저장한 링크예요."); return; }
-  const now = Date.now(), rec = { id:uuid(), kind:"link", ref:"", url:href, title:"", memo:"", tags:[], createdAt:now, updatedAt:now };
-  S.bmTag = null; putBookmark(rec); render(); toast("링크를 저장했어요.");
-  fetchLinkTitle(rec.id);
 }
 async function fetchLinkTitle(id){
   const b = S.bookmarks.find(x => x.id === id);
@@ -2688,12 +2899,12 @@ function renderBmForm(){
       <div class="fld"><label for="bm-url">웹 주소</label><input id="bm-url" type="text" inputmode="url" value="${esc(keep ? keep.url : b.url)}" spellcheck="false" required></div>
       <div class="fld"><label for="bm-title">제목</label><input id="bm-title" type="text" maxlength="200" value="${esc(keep ? keep.title : b.title)}" placeholder="${esc(bmHost(b.url))}"></div>
       <div class="fld"><label for="bm-memo">메모</label><textarea id="bm-memo" rows="3" maxlength="1000" placeholder="왜 저장했는지 적어 두면 나중에 찾기 쉬워요">${esc(keep ? keep.memo : b.memo)}</textarea></div>
-      <div class="fld"><label for="bm-tags">태그</label><input id="bm-tags" type="text" value="${esc(keep ? keep.tags : (b.tags || []).join(", "))}" placeholder="쉼표로 나눠 적어요 (예: 읽을거리, 건축)"></div>
+      <div class="fld"><label for="bm-tags">컬렉션</label><input id="bm-tags" type="text" value="${esc(keep ? keep.tags : (b.tags || []).join(", "))}" placeholder="쉼표로 나눠 적어요 (예: 읽을거리, 건축)"></div>
       ${OV.err ? `<p class="err" style="margin:0;color:var(--danger);font-size:13px">${esc(OV.err)}</p>` : ""}
       <div class="bm-facts"><a href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">링크 열기 ↗</a><span>${esc(fmtDate(ymd(new Date(b.createdAt || Date.now()))))} 저장</span></div>
       <div class="sb-foot bm-foot">${OV.confirm
-        ? `<span class="bm-q">이 링크를 지울까요?</span><button class="btn small danger" type="button" data-act="bmDelYes">지우기</button><button class="btn small" type="button" data-act="bmDelNo">취소</button>`
-        : `<button class="btn ghost danger" type="button" data-act="bmDel">지우기</button><span class="sp"></span><button class="btn" type="button" data-act="close">취소</button><button class="btn primary" type="submit">저장</button>`}</div>
+        ? `<span class="bm-q">이 링크를 휴지통으로 옮길까요?</span><button class="btn small danger" type="button" data-act="bmDelYes">옮기기</button><button class="btn small" type="button" data-act="bmDelNo">취소</button>`
+        : `<button class="btn ghost danger" type="button" data-act="bmDel">삭제</button><span class="sp"></span><button class="btn" type="button" data-act="close">취소</button><button class="btn primary" type="submit">저장</button>`}</div>
     </form></div>`);
 }
 function bmDraft(){ return { url:($("#bm-url") || {}).value || "", title:($("#bm-title") || {}).value || "", memo:($("#bm-memo") || {}).value || "", tags:($("#bm-tags") || {}).value || "" }; }
@@ -2701,19 +2912,29 @@ function saveBm(){
   const b = S.bookmarks.find(x => x.id === OV.id); if(!b) return;
   const d = bmDraft(), href = normUrl(d.url);
   if(!href){ OV.draft = d; OV.err = "웹 주소가 올바르지 않아요."; renderBmForm(); return; }
-  const tags = [...new Set(d.tags.split(/[,#]/).map(s => s.trim()).filter(Boolean).map(s => s.slice(0, 30)))].slice(0, 20);
+  const tags = bmkParseTags(d.tags);
   putBookmark({ ...b, url:href, title:d.title.trim().slice(0, 200), memo:d.memo.trim().slice(0, 1000), tags, updatedAt:Date.now() });
   closeOv(); render(); toast("링크를 저장했어요.");
 }
-function deleteBm(){ const id = OV.id; closeOv(); dropBookmark(id); render(); toast("링크를 지웠어요."); }
+function deleteBm(){ const id = OV.id; closeOv(); bmkDelete([id]); }
 
 // drop photos anywhere on the album screen (computer)
-document.addEventListener("dragover", ev => { if(S.view === "photos" && !OV && ev.dataTransfer && [...ev.dataTransfer.types].includes("Files")){ ev.preventDefault(); document.body.classList.add("ph-drop"); } });
-document.addEventListener("dragleave", ev => { if(!ev.relatedTarget) document.body.classList.remove("ph-drop"); });
+document.addEventListener("dragover", ev => {
+  if(OV || !ev.dataTransfer) return;
+  const types = [...ev.dataTransfer.types];
+  if(S.view === "photos" && types.includes("Files")){ ev.preventDefault(); document.body.classList.add("ph-drop"); }
+  else if(S.view === "bookmarks" && !S.bmkTrash && (types.includes("Files") || types.includes("text/uri-list") || types.includes("text/plain"))){ ev.preventDefault(); document.body.classList.add("bmk-drop"); }
+});
+document.addEventListener("dragleave", ev => { if(!ev.relatedTarget) document.body.classList.remove("ph-drop", "bmk-drop"); });
 document.addEventListener("drop", ev => {
-  document.body.classList.remove("ph-drop");
-  if(S.view !== "photos" || OV || !ev.dataTransfer || !ev.dataTransfer.files.length) return;
-  ev.preventDefault(); uploadAlbum(ev.dataTransfer.files);
+  document.body.classList.remove("ph-drop", "bmk-drop");
+  if(OV || !ev.dataTransfer) return;
+  if(S.view === "photos" && ev.dataTransfer.files.length){ ev.preventDefault(); uploadAlbum(ev.dataTransfer.files); return; }
+  if(S.view !== "bookmarks" || S.bmkTrash) return;
+  ev.preventDefault();
+  if(ev.dataTransfer.files.length){ uploadAlbum(ev.dataTransfer.files, { fav:true, tags:bmkCurTags() }); return; }
+  const text = (ev.dataTransfer.getData("text/uri-list") || ev.dataTransfer.getData("text/plain") || "").split("\n").filter(l => l && !l.startsWith("#")).join(" ").trim();
+  const inp = $("#bmkIn"); if(text && inp){ inp.value = text; bmkAddFromInput(); }
 });
 
 /* ---------- SNS: X-style feed of daily picks (sns/feed.json, filled by sns/add.py) ---------- */
@@ -3561,6 +3782,7 @@ function setFilter(key, v){ S.filter[key] = v; if(S.view !== "archive") S.view =
 document.addEventListener("click", ev => {
   if(ev.target.matches && ev.target.matches("[data-ovbg]")){ closeOv(); return; }
   if(BT.menu && !(ev.target.closest && ev.target.closest(".bt-pop,[data-btmenu]"))){ BT.menu = null; btPaintMenus(); }
+  if(S.bmkMenu && !(ev.target.closest && ev.target.closest(".bmk-pop,[data-bmkmenu]"))){ S.bmkMenu = null; if(S.view === "bookmarks") render(); }
   const t = ev.target.closest("button,[data-open]");
   if(!t) return;
   const ds = t.dataset;
@@ -3587,9 +3809,19 @@ document.addEventListener("click", ev => {
   if(ds.snsretry){ snsLoad(true); render(); return; }
   if(ds.pvtopic){ t.setAttribute("aria-pressed", String(t.getAttribute("aria-pressed") !== "true")); return; }
   if(ds.phgo){ const k = ds.phgo; closeOv(); if(S.view !== "photos"){ S.view = "photos"; } S.phQ = ""; S.phFav = false; S.phTopic = k; S.phLimit = PH_PAGE; savePrefs(); render(); window.scrollTo({ top:0 }); return; }
-  if(ds.bmtab){ S.bmTab = ds.bmtab; savePrefs(); render(); return; }
-  if(ds.bmtag){ S.bmTag = S.bmTag === ds.bmtag ? null : ds.bmtag; render(); return; }
-  if(ds.bmedit){ openBmForm(ds.bmedit); return; }
+  if(ds.bmkcol !== undefined){ S.bmkCol = ds.bmkcol || null; S.bmkTrash = false; S.bmkSel = null; S.bmkEmptyAsk = false; render(); return; }
+  if(ds.bmktab){ S.bmkTab = ds.bmktab; S.bmkSel = null; savePrefs(); render(); return; }
+  if(ds.bmksort !== undefined){ S.bmkSort = { new:"old", old:"name", name:"new" }[S.bmkSort] || "new"; savePrefs(); render(); toast(`${BMK_SORTS[S.bmkSort]}으로 정렬했어요.`); return; }
+  if(ds.bmktrash !== undefined){ S.bmkTrash = !S.bmkTrash; S.bmkSel = null; S.bmkEmptyAsk = false; render(); return; }
+  if(ds.bmkrefresh !== undefined){ bmkRefresh(t); return; }
+  if(ds.bmkaddlink !== undefined){ bmkAddFromInput("link"); return; }
+  if(ds.bmkselect !== undefined){ S.bmkSel = S.bmkSel ? null : new Set(); render(); return; }
+  if(ds.bmkselall !== undefined){ const ids = bmkList().map(it => it.b.id); S.bmkSel = S.bmkSel && S.bmkSel.size === ids.length ? new Set() : new Set(ids); render(); return; }
+  if(ds.bmkpick){ if(S.bmkSel){ if(S.bmkSel.has(ds.bmkpick)) S.bmkSel.delete(ds.bmkpick); else S.bmkSel.add(ds.bmkpick); render(); } return; }
+  if(ds.bmkmenu){ S.bmkMenu = S.bmkMenu === ds.bmkmenu ? null : ds.bmkmenu; render(); return; }
+  if(ds.bmkpickcol && OV && OV.kind === "bmkcol"){ const c = ds.bmkpickcol; if(OV.on.has(c)) OV.on.delete(c); else OV.on.add(c); t.setAttribute("aria-pressed", String(OV.on.has(c))); return; }
+  if(ds.bmkact !== undefined){ const i = ds.bmkact.indexOf(":"); bmkAct(ds.bmkact.slice(0, i), ds.bmkact.slice(i + 1)); return; }
+  if(ds.bmktop !== undefined){ window.scrollTo({ top:0, behavior:"smooth" }); return; }
   // bitcoin
   if(ds.bttab){ btSetTab(ds.bttab); return; }
   if(ds.btmenu){ BT.menu = BT.menu === ds.btmenu ? null : ds.btmenu; btPaintMenus(); return; }
@@ -3733,6 +3965,7 @@ document.addEventListener("keydown", ev => {
   if(ev.key === "Escape" && OV){ closeOv(); return; }
   if(OV && OV.kind === "photo" && !typing && !OV.edit && (ev.key === "ArrowLeft" || ev.key === "ArrowRight")){ ev.preventDefault(); phNav(ev.key === "ArrowLeft" ? -1 : 1); return; }
   if(ev.key === "Escape" && BT.menu){ BT.menu = null; btPaintMenus(); return; }
+  if(ev.key === "Escape" && S.view === "bookmarks" && (S.bmkMenu || S.bmkSel)){ S.bmkMenu = null; S.bmkSel = null; render(); return; }
   if(OV && OV.kind === "edit"){
     if((ev.metaKey || ev.ctrlKey) && ev.key === "Enter"){ ev.preventDefault(); if(!OV.busy) saveDraft(); return; }
     if(ev.target.id === "f-tag" && (ev.key === "Enter" || ev.key === ",") && !ev.isComposing){ ev.preventDefault(); syncDraft(); const v = ev.target.value; if(v.trim()){ addTag(v); renderEditor(); const t = $("#f-tag"); if(t) t.focus(); } return; }
@@ -3757,6 +3990,7 @@ document.addEventListener("change", ev => {
   }
   if(t.id === "f-photo" && t.files.length){ uploadPhotos(t.files); }
   if(t.id === "phFile" && t.files.length){ const fs = [...t.files]; t.value = ""; uploadAlbum(fs); }
+  if(t.id === "bmkFile" && t.files.length){ const fs = [...t.files]; t.value = ""; uploadAlbum(fs, { fav:true, tags:bmkCurTags() }); }
   if(t.id === "f-cat" && OV){ OV.draft.cat = t.value; }
   if(t.id === "importFile" && t.files.length){
     const f = t.files[0];
@@ -3774,7 +4008,10 @@ document.addEventListener("submit", ev => {
   else if(ev.target.id === "divForm") saveDivForm();
   else if(ev.target.id === "gateForm") gateSubmit(ev.target);
   else if(ev.target.id === "bkSearch") btSearch();
-  else if(ev.target.id === "bmAdd") addLink();
+  else if(ev.target.id === "bmkAdd") bmkAddFromInput();
+  else if(ev.target.id === "bmkColForm") bmkAddCol();
+  else if(ev.target.id === "bmkColPick") applyColPicker();
+  else if(ev.target.id === "bmkMemoForm") saveMemo();
   else if(ev.target.id === "bmForm") saveBm();
   else if(ev.target.id === "phForm") savePhotoEdit();
 });
@@ -3789,12 +4026,15 @@ document.addEventListener("input", ev => {
   const t = ev.target;
   if(t.id === "st-q" && OV && OV.kind === "stsearch") onStockSearchInput(t.value);
   if(t.id === "phQ"){ S.phQ = t.value; S.phLimit = PH_PAGE; setH("phBody", phBodyHtml()); bindPhotoMore(); hydrateImages(); }
+  if(t.id === "bmkQ"){ S.bmkQ = t.value; setH("bmkList", bmkListHtml()); hydrateImages(); }
+  if(t.id === "bmkColQ"){ S.bmkColQ = t.value; setH("bmkCols", bmkColsHtml()); }
   if(t.id === "bcAmt"){ BT.conv.amt = t.value; btPaintConvert(); }
   if(t.id === "bcPrem"){ BT.conv.prem = t.value; btPaintConvert(); }
   if(t.id === "dv-amt" && OV && OV.kind === "divform"){ OV.d.amount = t.value; const h = $("#dvKrwHint"); if(h) h.textContent = dvKrwHint(); }
 });
 window.addEventListener("online", () => { updateSyncUI(); pull(); if(S.view === "stocks") refreshQuotes(true); });
 window.addEventListener("offline", () => updateSyncUI());
+window.addEventListener("scroll", () => { const b = S.view === "bookmarks" && document.querySelector(".bmk-totop"); if(b) b.hidden = window.scrollY < 500; }, { passive:true });
 document.addEventListener("visibilitychange", () => {
   if(document.visibilityState !== "visible" || !S.uid) return;
   if(Date.now() - S.lastPull > 30000) pull();
@@ -3843,10 +4083,10 @@ async function boot(){
 async function startApp(user){
   resetState();
   S.uid = user.id; S.email = user.email || "";
-  const [ents, st, ob, ls, urls, stx, dvs, qts, phs, bms] = await Promise.all(["entries","settings","outbox","lastSync","urls","stocks","divs","quotes","photos","bookmarks"].map(n => KV.get(k(n))));
+  const [ents, st, ob, ls, urls, stx, dvs, qts, phs, bms, trash] = await Promise.all(["entries","settings","outbox","lastSync","urls","stocks","divs","quotes","photos","bookmarks","bmTrash"].map(n => KV.get(k(n))));
   S.entries = Array.isArray(ents) ? ents : []; S.loaded = Array.isArray(ents);
   S.stocks = Array.isArray(stx) ? stx : []; S.divs = Array.isArray(dvs) ? dvs : [];
-  S.photos = Array.isArray(phs) ? phs : []; S.bookmarks = Array.isArray(bms) ? bms : [];
+  S.photos = Array.isArray(phs) ? phs : []; S.bookmarks = Array.isArray(bms) ? bms : []; S.bmTrash = Array.isArray(trash) ? trash : [];
   if(qts && qts.quotes){ S.quotes = qts.quotes; S.fx = qts.fx || null; S.quotesAt = qts.at || 0; S.market = qts.market || {}; }
   if(st && Array.isArray(st.categories) && st.categories.length) S.cats = st.categories;
   S.outbox = Array.isArray(ob) ? ob : []; S.lastSync = ls || 0;
