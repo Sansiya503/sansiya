@@ -5,7 +5,7 @@
 (() => {
 "use strict";
 
-const APP_VERSION = "1.14.1";
+const APP_VERSION = "1.14.2";
 const SUPA_SRC = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js";
 const URL_TTL = 7 * 86400; // seconds a signed photo URL stays valid
 const DEFAULT_CATS = [
@@ -2966,12 +2966,13 @@ function snsDay(day){
   const [y, m, d] = String(day || "").split("-").map(Number); if(!d) return "";
   return `${day === today ? "오늘 · " : ""}${m}월 ${d}일 (${WD[new Date(y, m - 1, d).getDay()]})`;
 }
-async function snsLoad(force){
+async function snsLoad(force, fresh){
   if(SNS.busy || (!force && Date.now() - SNS.at < 10 * 60e3)) return;
   SNS.busy = true; SNS.at = Date.now();
   try{
     if(!SNS.posts){ const c = await KV.get("sns-feed"); if(c && Array.isArray(c.posts)){ SNS.posts = c.posts; SNS.updatedAt = c.updatedAt || null; if(S.view === "sns") render(); } }
-    const r = await fetch("sns/feed.json", { cache:"no-cache" });
+    // a manual refresh skips the GitHub Pages cache too, so a feed pushed a minute ago shows up
+    const r = await fetch(fresh ? `sns/feed.json?t=${Date.now()}` : "sns/feed.json", { cache:fresh ? "no-store" : "no-cache" });
     if(!r.ok) throw new Error("HTTP " + r.status);
     const j = await r.json();
     SNS.posts = Array.isArray(j.posts) ? j.posts : []; SNS.updatedAt = j.updatedAt || null; SNS.err = false;
@@ -3074,12 +3075,22 @@ function snsHtml(){
   else body = snsRowsHtml(list, 0, to);
   return `<div class="xf">
     <div class="xf-head">
-      <div class="xf-title"><h2>SNS</h2>${sub ? `<small>${esc(sub)}</small>` : ""}</div>
+      <div class="xf-title"><h2>SNS</h2>${sub ? `<small>${esc(sub)}</small>` : ""}<button type="button" class="xf-refresh" data-snsrefresh title="새로고침" aria-label="새 소식 불러오기">${BMK_IC.refresh}</button></div>
       <nav class="xf-tabs" role="tablist" aria-label="SNS 주제">${SNS_TOPICS.map(([k, l]) => `<button type="button" role="tab" data-snstopic="${k}" aria-selected="${tp === k}"><span>${l}</span></button>`).join("")}</nav>
     </div>
     <div class="xf-list" id="snsList">${body}</div>
     ${to < list.length ? `<div class="xf-more" id="snsMore"><button type="button" class="xf-btn" data-snsmore="1">더 보기</button></div>` : ""}
   </div>`;
+}
+async function snsRefresh(btn){
+  if(SNS.busy) return;
+  btn.classList.add("spin"); btn.disabled = true;
+  const had = new Set((SNS.posts || []).map(p => p.id));
+  await snsLoad(true, true);
+  if(SNS.err){ toast(navigator.onLine ? "소식을 불러오지 못했어요. 잠시 뒤 다시 눌러 주세요." : "인터넷에 연결되어 있지 않아요."); return; }
+  const n = (SNS.posts || []).filter(p => !had.has(p.id)).length;
+  toast(n ? `새 소식 ${n}개를 불러왔어요.` : "새 소식이 아직 없어요. 매일 아침 올라와요.");
+  if(n) window.scrollTo({ top:0 });
 }
 let snsIO = null;
 function snsMore(){
@@ -3807,6 +3818,7 @@ document.addEventListener("click", ev => {
   if(ds.snsshare){ snsShare(ds.snsshare); return; }
   if(ds.snsmore){ snsMore(); return; }
   if(ds.snsretry){ snsLoad(true); render(); return; }
+  if(ds.snsrefresh !== undefined){ snsRefresh(t); return; }
   if(ds.pvtopic){ t.setAttribute("aria-pressed", String(t.getAttribute("aria-pressed") !== "true")); return; }
   if(ds.phgo){ const k = ds.phgo; closeOv(); if(S.view !== "photos"){ S.view = "photos"; } S.phQ = ""; S.phFav = false; S.phTopic = k; S.phLimit = PH_PAGE; savePrefs(); render(); window.scrollTo({ top:0 }); return; }
   if(ds.bmkcol !== undefined){ S.bmkCol = ds.bmkcol || null; S.bmkTrash = false; S.bmkSel = null; S.bmkEmptyAsk = false; render(); return; }
